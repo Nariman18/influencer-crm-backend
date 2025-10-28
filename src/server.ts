@@ -14,6 +14,7 @@ const corsOptions = {
   origin: [
     "http://localhost:3000",
     "https://localhost:3000",
+    "https://influencer-crm-frontend.vercel.app",
     process.env.FRONTEND_URL,
   ].filter(Boolean) as string[],
   credentials: true,
@@ -24,8 +25,11 @@ const corsOptions = {
     "X-Requested-With",
     "Accept",
     "Origin",
+    "X-CSRF-Token",
   ],
+  exposedHeaders: ["Content-Length", "Authorization"],
   optionsSuccessStatus: 200,
+  maxAge: 86400, // 24 hours
 };
 
 // Apply CORS middleware
@@ -44,6 +48,8 @@ app.get("/health", (_req: Request, res: Response) => {
     status: "ok",
     timestamp: new Date().toISOString(),
     cors: "enabled",
+    allowedOrigins: corsOptions.origin,
+    environment: process.env.NODE_ENV || "development",
   });
 });
 
@@ -52,6 +58,8 @@ app.get("/api/test-cors", (_req: Request, res: Response) => {
   res.json({
     message: "CORS is working!",
     timestamp: new Date().toISOString(),
+    frontend: "https://influencer-crm-frontend.vercel.app",
+    environment: process.env.NODE_ENV || "development",
   });
 });
 
@@ -62,7 +70,8 @@ app.use(errorHandler);
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`🌐 CORS enabled for: ${corsOptions.origin.join(", ")}`);
+  console.log(`🌐 CORS enabled for origins: ${corsOptions.origin.join(", ")}`);
+  console.log(`🔗 Frontend URL: https://influencer-crm-frontend.vercel.app`);
 });
 
 // Handle server errors

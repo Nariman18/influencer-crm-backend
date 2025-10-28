@@ -4,7 +4,8 @@
   "main": "dist/src/server.js",
   "scripts": {
     "dev": "nodemon src/server.ts",
-    "build": "tsc",
+    "build": "tsc && echo 'TypeScript compilation completed'",
+    "postbuild": "ls -la dist/ && echo 'Build files:'",
     "start": "node dist/src/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

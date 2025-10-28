@@ -1,0 +1,194 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  MEMBER
+}
+
+enum InfluencerStatus {
+  PING_1
+  PING_2
+  PING_3
+  CONTRACT
+  REJECTED
+  COMPLETED
+}
+
+enum ContractStatus {
+  DRAFT
+  SENT
+  SIGNED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum EmailStatus {
+  PENDING
+  SENT
+  FAILED
+  OPENED
+  REPLIED
+}
+
+model User {
+  id                String      @id @default(uuid())
+  email             String      @unique
+  password          String
+  name              String
+  role              UserRole    @default(MEMBER)
+  isActive          Boolean     @default(true)
+  googleAccessToken String?
+  googleRefreshToken String?
+  googleEmail       String?    
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  
+  campaigns         Campaign[]
+  emailsSent        Email[]
+  auditLogs         AuditLog[]
+  
+  @@map("users")
+}
+
+model Influencer {
+  id              String            @id @default(uuid())
+  name            String
+  email           String?
+  instagramHandle String?
+  followers       Int?
+  engagementRate  Float?
+  niche           String?
+  country         String?
+  status          InfluencerStatus  @default(PING_1)
+  notes           String?
+  lastContactDate DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  contracts       Contract[]
+  emails          Email[]
+  campaigns       CampaignInfluencer[]
+  
+  @@map("influencers")
+}
+
+model Contract {
+  id              String         @id @default(uuid())
+  influencerId    String
+  campaignId      String?
+  status          ContractStatus @default(DRAFT)
+  amount          Float?
+  currency        String         @default("USD")
+  startDate       DateTime?
+  endDate         DateTime?
+  deliverables    String?
+  terms           String?
+  signedAt        DateTime?
+  contractFileUrl String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  
+  influencer      Influencer     @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  campaign        Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  
+  @@map("contracts")
+}
+
+model Campaign {
+  id          String     @id @default(uuid())
+  name        String
+  description String?
+  budget      Float?
+  startDate   DateTime?
+  endDate     DateTime?
+  isActive    Boolean    @default(true)
+  createdById String
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  
+  createdBy   User       @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  contracts   Contract[]
+  influencers CampaignInfluencer[]
+  
+  @@map("campaigns")
+}
+
+model CampaignInfluencer {
+  id           String     @id @default(uuid())
+  campaignId   String
+  influencerId String
+  addedAt      DateTime   @default(now())
+  
+  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  influencer   Influencer @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  
+  @@unique([campaignId, influencerId])
+  @@map("campaign_influencers")
+}
+
+model EmailTemplate {
+  id          String   @id @default(uuid())
+  name        String
+  subject     String
+  body        String
+  variables   String[]
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  emails      Email[]
+  
+  @@map("email_templates")
+}
+
+model Email {
+  id           String      @id @default(uuid())
+  influencerId String
+  templateId   String?
+  sentById     String
+  subject      String
+  body         String
+  status       EmailStatus @default(PENDING)
+  sentAt       DateTime?
+  openedAt     DateTime?
+  repliedAt    DateTime?
+  errorMessage String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  
+  influencer   Influencer     @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  template     EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  sentBy       User           @relation(fields: [sentById], references: [id], onDelete: Cascade)
+  
+  @@map("emails")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+  
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("audit_logs")
+}

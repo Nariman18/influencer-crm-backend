@@ -149,7 +149,7 @@ class EmailService {
           },
         };
 
-        console.log("📤 Sending email...", {
+        console.log("Sending email...", {
           from: mailOptions.from.address,
           to: mailOptions.to,
           subject: mailOptions.subject.substring(0, 50) + "...",
@@ -157,7 +157,7 @@ class EmailService {
 
         const result = await transporter.sendMail(mailOptions);
 
-        console.log("✅ Email sent successfully:", {
+        console.log("Email sent successfully:", {
           messageId: result.messageId,
           response: result.response,
         });

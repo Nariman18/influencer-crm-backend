@@ -22,12 +22,15 @@ export const exchangeGoogleToken = async (
       throw new AppError("Authorization code required", 400);
     }
 
+    const redirectUri = `${process.env.FRONTEND_URL}/auth/callback`;
+    const cleanRedirectUri = redirectUri.replace(/\/\/+/g, "/");
+
     console.log("📝 Exchanging code for tokens...");
 
     const oauth2Client = new OAuth2(
       process.env.GOOGLE_CLIENT_ID!,
       process.env.GOOGLE_CLIENT_SECRET!,
-      `${process.env.FRONTEND_URL}/auth/callback`
+      cleanRedirectUri // Using the cleaned URI
     );
 
     // **FIX: Add better error handling for token exchange**
@@ -35,9 +38,9 @@ export const exchangeGoogleToken = async (
     try {
       const tokenResponse = await oauth2Client.getToken(code);
       tokens = tokenResponse.tokens;
-      console.log("✅ Tokens received successfully");
+      console.log("Tokens received successfully");
     } catch (tokenError: any) {
-      console.error("❌ Token exchange failed:", tokenError);
+      console.error("Token exchange failed:", tokenError);
       if (tokenError.message.includes("invalid_grant")) {
         throw new AppError(
           "Authorization code is invalid or has expired. Please try connecting again.",
@@ -48,7 +51,7 @@ export const exchangeGoogleToken = async (
     }
 
     if (!tokens.access_token || !tokens.refresh_token) {
-      console.error("❌ Incomplete tokens received:", tokens);
+      console.error("Incomplete tokens received:", tokens);
       throw new AppError("Incomplete tokens received from Google", 400);
     }
 
@@ -69,9 +72,9 @@ export const exchangeGoogleToken = async (
     let userInfo;
     try {
       userInfo = await oauth2.userinfo.get();
-      console.log("✅ User info retrieved:", userInfo.data.email);
+      console.log("User info retrieved:", userInfo.data.email);
     } catch (userInfoError: any) {
-      console.error("❌ Failed to get user info:", userInfoError);
+      console.error("Failed to get user info:", userInfoError);
       throw new AppError("Failed to verify Google account information", 400);
     }
 
@@ -84,9 +87,9 @@ export const exchangeGoogleToken = async (
       const gmail = google.gmail({ version: "v1", auth: oauth2Client });
       // Simple test to verify Gmail access
       await gmail.users.getProfile({ userId: "me" });
-      console.log("✅ Gmail API access verified");
+      console.log("Gmail API access verified");
     } catch (gmailError: any) {
-      console.error("❌ Gmail API access failed:", gmailError);
+      console.error("Gmail API access failed:", gmailError);
       throw new AppError(
         "Gmail API access not granted. Please make sure to grant all requested permissions.",
         400
@@ -100,7 +103,7 @@ export const exchangeGoogleToken = async (
       expiresIn: tokens.expiry_date,
     });
   } catch (error: unknown) {
-    console.error("🔥 Google token exchange error:", error);
+    console.error("Google token exchange error:", error);
     if (error instanceof AppError) throw error;
     throw new AppError("Failed to exchange authorization code", 500);
   }
@@ -181,7 +184,7 @@ export const connectGoogleAccount = async (
       },
     });
 
-    console.log("✅ Google account connected successfully:", {
+    console.log("Google account connected successfully:", {
       userId: updatedUser.id,
       userEmail: updatedUser.email,
       gmailAddress: updatedUser.googleEmail,
@@ -194,7 +197,7 @@ export const connectGoogleAccount = async (
       gmailAddress: email,
     });
   } catch (error: unknown) {
-    console.error("🔥 Google account connection error:", error);
+    console.error("Google account connection error:", error);
     if (error instanceof AppError) throw error;
     throw new AppError("Failed to connect Google account", 500);
   }
@@ -223,7 +226,7 @@ export const disconnectGoogleAccount = async (
       },
     });
 
-    console.log("✅ Google account disconnected successfully");
+    console.log("Google account disconnected successfully");
 
     res.json({
       message: "Google account disconnected successfully",

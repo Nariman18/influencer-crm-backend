@@ -23,14 +23,13 @@ export const exchangeGoogleToken = async (
     }
 
     const redirectUri = `${process.env.FRONTEND_URL}/auth/callback`;
-    const cleanRedirectUri = redirectUri.replace(/\/\/+/g, "/");
 
     console.log("📝 Exchanging code for tokens...");
 
     const oauth2Client = new OAuth2(
       process.env.GOOGLE_CLIENT_ID!,
       process.env.GOOGLE_CLIENT_SECRET!,
-      cleanRedirectUri // Using the cleaned URI
+      redirectUri
     );
 
     // **FIX: Add better error handling for token exchange**

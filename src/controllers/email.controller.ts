@@ -2,17 +2,19 @@ import { Response } from "express";
 import prisma from "../config/prisma";
 import { AuthRequest, PaginatedResponse } from "../types";
 import { AppError } from "../middleware/errorHandler";
-import nodemailer from "nodemailer";
 import { google } from "googleapis";
 import { EmailStatus } from "@prisma/client";
 
 const OAuth2 = google.auth.OAuth2;
 
-// Email service with proper Gmail OAuth2 implementation
+// Email service with Gmail API implementation (no SMTP)
 class EmailService {
-  public static async createTransporter(userId: string) {
+  /**
+   * Validate Gmail access and refresh tokens if needed
+   */
+  public static async validateGmailAccess(userId: string): Promise<boolean> {
     try {
-      console.log("🔧 Creating email transporter for user:", userId);
+      console.log("🔧 Validating Gmail access for user:", userId);
 
       const user = await prisma.user.findUnique({
         where: { id: userId },
@@ -21,7 +23,6 @@ class EmailService {
           googleRefreshToken: true,
           googleEmail: true,
           name: true,
-          email: true,
         },
       });
 
@@ -34,10 +35,6 @@ class EmailService {
       }
 
       console.log("📧 Using Gmail address:", user.googleEmail);
-      console.log("🔑 Token status:", {
-        accessTokenLength: user.googleAccessToken.length,
-        refreshTokenLength: user.googleRefreshToken.length,
-      });
 
       const oauth2Client = new OAuth2(
         process.env.GOOGLE_CLIENT_ID!,
@@ -50,13 +47,21 @@ class EmailService {
         refresh_token: user.googleRefreshToken,
       });
 
-      let validAccessToken = user.googleAccessToken;
-
-      // Force token refresh and validate with Gmail API
+      // Try to refresh token if expired
       try {
+        const tokenInfo = await oauth2Client.getTokenInfo(
+          user.googleAccessToken
+        );
+        console.log(
+          "Token is valid, expires at:",
+          new Date(tokenInfo.expiry_date!)
+        );
+      } catch (tokenError) {
+        console.log("🔄 Token expired, refreshing...");
         const { credentials } = await oauth2Client.refreshAccessToken();
+
         if (credentials.access_token) {
-          validAccessToken = credentials.access_token;
+          // Update user with new tokens
           await prisma.user.update({
             where: { id: userId },
             data: {
@@ -66,51 +71,32 @@ class EmailService {
               }),
             },
           });
-          console.log("✅ Token refreshed successfully");
+          console.log("Token refreshed successfully");
+
+          // Update OAuth client with new tokens
+          oauth2Client.setCredentials(credentials);
         }
-      } catch (refreshError: any) {
-        console.error("❌ Token refresh failed:", refreshError);
-        if (refreshError.response?.data?.error === "invalid_grant") {
-          throw new Error(
-            "Google authentication revoked. Please reconnect your account."
-          );
-        }
-        throw new Error(`Token refresh failed: ${refreshError.message}`);
       }
 
-      // Validate token with Gmail API
+      // Test Gmail API access
       const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-      await gmail.users.labels.list({ userId: "me" }); // Test API access
-      console.log("✅ Gmail API access confirmed with token");
+      await gmail.users.getProfile({ userId: "me" });
+      console.log("Gmail API access confirmed");
 
-      const transporter = nodemailer.createTransport({
-        service: "gmail",
-        auth: {
-          type: "OAuth2",
-          user: user.googleEmail,
-          clientId: process.env.GOOGLE_CLIENT_ID,
-          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-          refreshToken: user.googleRefreshToken,
-          accessToken: validAccessToken,
-        },
-        debug: true, // Enable for detailed logs
-        logger: true,
-      });
-
-      await transporter.verify();
-      console.log("✅ Email transporter verified successfully");
-
-      return transporter;
+      return true;
     } catch (error) {
-      console.error("❌ Failed to create email transporter:", error);
+      console.error("Gmail access validation failed:", error);
       throw new Error(
-        `Failed to initialize email service: ${
+        `Failed to validate Gmail access: ${
           error instanceof Error ? error.message : "Unknown error"
         }`
       );
     }
   }
 
+  /**
+   * Send email using Gmail API
+   */
   static async sendEmail(
     userId: string,
     to: string,
@@ -118,107 +104,249 @@ class EmailService {
     body: string,
     influencerName: string
   ): Promise<{ messageId: string; sentAt: Date }> {
-    console.log(`📧 Starting email send process to: ${to}`);
+    console.log(`Starting Gmail API send process to: ${to}`);
 
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        console.log(`🔄 Attempt ${attempt} to send email`);
+        console.log(`Attempt ${attempt} to send email via Gmail API`);
 
-        const transporter = await this.createTransporter(userId);
-
+        // Get user with Google tokens
         const user = await prisma.user.findUnique({
           where: { id: userId },
-          select: { name: true, googleEmail: true },
+          select: {
+            googleAccessToken: true,
+            googleRefreshToken: true,
+            googleEmail: true,
+            name: true,
+          },
         });
 
-        const mailOptions = {
-          from: {
-            name: user?.name || "Influencer CRM",
-            address: user?.googleEmail || "",
-          },
-          to,
-          subject,
-          html: this.wrapEmailBody(body, influencerName),
-          text: body.replace(/<[^>]*>/g, ""),
-          headers: {
-            "X-Priority": "1",
-            "X-Mailer": "InfluencerCRM",
-            "Reply-To": user?.googleEmail || "",
-          },
-        };
+        if (
+          !user?.googleAccessToken ||
+          !user?.googleRefreshToken ||
+          !user?.googleEmail
+        ) {
+          throw new Error("No Google account connected");
+        }
 
-        console.log("Sending email...", {
-          from: mailOptions.from.address,
-          to: mailOptions.to,
-          subject: mailOptions.subject.substring(0, 50) + "...",
+        console.log("Using Gmail account:", user.googleEmail);
+
+        // Create OAuth2 client
+        const oauth2Client = new OAuth2(
+          process.env.GOOGLE_CLIENT_ID!,
+          process.env.GOOGLE_CLIENT_SECRET!,
+          process.env.GOOGLE_REDIRECT_URI!
+        );
+
+        oauth2Client.setCredentials({
+          access_token: user.googleAccessToken,
+          refresh_token: user.googleRefreshToken,
         });
 
-        const result = await transporter.sendMail(mailOptions);
+        // Refresh token if needed
+        try {
+          await oauth2Client.getTokenInfo(user.googleAccessToken);
+          console.log("Access token is valid");
+        } catch (tokenError) {
+          console.log("Refreshing access token...");
+          const { credentials } = await oauth2Client.refreshAccessToken();
+          if (credentials.access_token) {
+            // Update user with new tokens
+            await prisma.user.update({
+              where: { id: userId },
+              data: {
+                googleAccessToken: credentials.access_token,
+                ...(credentials.refresh_token && {
+                  googleRefreshToken: credentials.refresh_token,
+                }),
+              },
+            });
+            console.log("Token refreshed successfully");
 
-        console.log("Email sent successfully:", {
-          messageId: result.messageId,
-          response: result.response,
+            // Update OAuth client with new tokens
+            oauth2Client.setCredentials(credentials);
+          }
+        }
+
+        // Create Gmail API client
+        const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+        // Create email message in RFC 5322 format
+        const emailLines = [
+          `From: "${user.name || "Influencer CRM"}" <${user.googleEmail}>`,
+          `To: ${to}`,
+          `Subject: ${subject}`,
+          "Content-Type: text/html; charset=utf-8",
+          "MIME-Version: 1.0",
+          "",
+          this.wrapEmailBody(body, influencerName),
+        ];
+
+        const email = emailLines.join("\r\n").trim();
+
+        // Encode the email in base64 URL-safe format (required by Gmail API)
+        const base64Email = Buffer.from(email)
+          .toString("base64")
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=+$/, "");
+
+        console.log("Sending email via Gmail API...", {
+          from: user.googleEmail,
+          to: to,
+          subject: subject.substring(0, 50) + "...",
+          bodyLength: body.length,
+        });
+
+        // Send the email using Gmail API
+        const response = await gmail.users.messages.send({
+          userId: "me",
+          requestBody: {
+            raw: base64Email,
+          },
+        });
+
+        console.log("Email sent successfully via Gmail API:", {
+          messageId: response.data.id,
+          threadId: response.data.threadId,
+          labelIds: response.data.labelIds,
         });
 
         return {
-          messageId: result.messageId,
+          messageId: response.data.id!,
           sentAt: new Date(),
         };
       } catch (error) {
         lastError = error as Error;
-        console.error(`❌ Attempt ${attempt} failed:`, error);
+        console.error(`Gmail API attempt ${attempt} failed:`, error);
+
+        // Log detailed error information
+        if (error instanceof Error) {
+          console.error("Error details:", {
+            name: error.name,
+            message: error.message,
+            stack: error.stack,
+          });
+        }
 
         if (attempt < 2) {
-          console.log("⏳ Waiting 2 seconds before retry...");
+          console.log("Waiting 2 seconds before retry...");
           await new Promise((resolve) => setTimeout(resolve, 2000));
         }
       }
     }
 
     // If all attempts failed
-    const errorMessage = `Failed to send email after 2 attempts: ${
+    const errorMessage = `Failed to send email after 2 attempts via Gmail API: ${
       lastError?.message || "Unknown error"
     }`;
-    console.error("🔥", errorMessage);
+    console.error("FINAL GMAIL API SEND FAILURE:", errorMessage);
     throw new Error(errorMessage);
   }
 
-  private static wrapEmailBody(body: string, _influencerName: string): string {
+  /**
+   * Wrap email body with HTML template
+   */
+  private static wrapEmailBody(body: string, influencerName: string): string {
     return `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="utf-8">
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: #dc2626; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
-            .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
-            .footer { background: #1f2937; color: white; padding: 20px; text-align: center; font-size: 12px; border-radius: 8px; margin-top: 20px; }
-            .signature { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h2>Influencer Collaboration</h2>
-          </div>
-          <div class="content">
-            ${body.replace(/\n/g, "<br>")}
-            <div class="signature">
-              <p>Best regards,<br>Influencer CRM Team</p>
-            </div>
-          </div>
-          <div class="footer">
-            <p>This email was sent via Influencer CRM Platform</p>
-          </div>
-        </body>
-      </html>
-    `;
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      body { 
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+        line-height: 1.6; 
+        color: #333; 
+        max-width: 600px; 
+        margin: 0 auto; 
+        padding: 0;
+        background-color: #f9fafb;
+      }
+      .container {
+        background: white;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        margin: 20px;
+      }
+      .header { 
+        background: #dc2626; 
+        color: white; 
+        padding: 24px 20px; 
+        text-align: center; 
+      }
+      .header h2 {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 600;
+      }
+      .content { 
+        padding: 32px 24px; 
+        background: white;
+      }
+      .content-body {
+        font-size: 16px;
+        line-height: 1.7;
+        color: #4b5563;
+      }
+      .footer { 
+        background: #1f2937; 
+        color: white; 
+        padding: 20px; 
+        text-align: center; 
+        font-size: 12px; 
+      }
+      .signature { 
+        margin-top: 24px; 
+        padding-top: 24px; 
+        border-top: 1px solid #e5e7eb; 
+        color: #6b7280;
+      }
+      .influencer-name {
+        color: #dc2626;
+        font-weight: 600;
+      }
+      @media only screen and (max-width: 600px) {
+        body {
+          padding: 10px;
+        }
+        .container {
+          margin: 10px;
+        }
+        .content {
+          padding: 24px 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h2>Influencer Collaboration</h2>
+      </div>
+      <div class="content">
+        <div class="content-body">
+          ${body.replace(/\n/g, "<br>")}
+        </div>
+        <div class="signature">
+          <p>Best regards,<br><strong>Influencer CRM Team</strong></p>
+        </div>
+      </div>
+      <div class="footer">
+        <p>This email was sent to <span class="influencer-name">${influencerName}</span> via Influencer CRM Platform</p>
+        <p>© ${new Date().getFullYear()} Influencer CRM. All rights reserved.</p>
+      </div>
+    </div>
+  </body>
+</html>`;
   }
-} // END OF EmailService CLASS
+}
 
-// MOVE validateEmailConfig OUTSIDE the class
+// Export the controller functions (keep your existing functions, they'll now use the Gmail API version)
 /**
  * Validate email configuration for authenticated user
  */
@@ -255,33 +383,30 @@ export const validateEmailConfig = async (
         hasTokens: false,
         gmailAddress: null,
       });
-      return; // ADD RETURN STATEMENT
+      return;
     }
 
-    console.log("🔧 Testing email configuration...");
+    console.log("🔧 Testing Gmail API configuration...");
 
     try {
-      // Test the configuration by creating a transporter
-      const transporter = await EmailService.createTransporter(req.user.id);
+      // Test the configuration by validating Gmail access
+      await EmailService.validateGmailAccess(req.user.id);
 
-      // Test with a simple verification
-      await transporter.verify();
-
-      console.log("✅ Email configuration is valid");
+      console.log("✅ Gmail API configuration is valid");
 
       res.json({
         isValid: true,
-        message: "Email configuration is valid and ready to send emails",
+        message: "Gmail API configuration is valid and ready to send emails",
         hasTokens: true,
         gmailAddress: user.googleEmail,
         userName: user.name,
       });
     } catch (error) {
-      console.error("❌ Email configuration test failed:", error);
+      console.error("❌ Gmail API configuration test failed:", error);
 
       res.json({
         isValid: false,
-        message: `Email configuration test failed: ${
+        message: `Gmail API configuration test failed: ${
           error instanceof Error ? error.message : "Unknown error"
         }`,
         hasTokens: true,
@@ -382,7 +507,7 @@ export const sendEmail = async (
   req: AuthRequest,
   res: Response
 ): Promise<void> => {
-  console.log(" ========== SEND EMAIL REQUEST STARTED ==========");
+  console.log(" ========== SEND EMAIL REQUEST STARTED (GMAIL API) ==========");
 
   try {
     console.log("🔧 Send email request received from user:", req.user?.id);
@@ -532,7 +657,10 @@ export const sendEmail = async (
         influencer.name
       );
 
-      console.log("Email sent successfully:", sendResult.messageId);
+      console.log(
+        "Email sent successfully via Gmail API:",
+        sendResult.messageId
+      );
 
       // Update email record with success
       const updatedEmail = await prisma.email.update({
@@ -568,7 +696,7 @@ export const sendEmail = async (
       console.log("========== SEND EMAIL REQUEST COMPLETED ==========");
       res.json(updatedEmail);
     } catch (sendError) {
-      console.error("Email sending failed:", sendError);
+      console.error("Email sending failed via Gmail API:", sendError);
 
       // Update email record with failure
       await prisma.email.update({
@@ -586,7 +714,7 @@ export const sendEmail = async (
       });
 
       throw new AppError(
-        `Failed to send email: ${
+        `Failed to send email via Gmail API: ${
           sendError instanceof Error ? sendError.message : "Unknown error"
         }`,
         500
@@ -671,7 +799,7 @@ export const bulkSendEmails = async (
         });
 
         try {
-          // Send actual email
+          // Send actual email via Gmail API
           await EmailService.sendEmail(
             req.user.id,
             influencer.email,

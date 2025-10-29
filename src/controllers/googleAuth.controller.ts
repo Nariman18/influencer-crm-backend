@@ -32,7 +32,7 @@ export const exchangeGoogleToken = async (
       redirectUri
     );
 
-    // **FIX: Add better error handling for token exchange**
+    // Add better error handling for token exchange**
     let tokens;
     try {
       const tokenResponse = await oauth2Client.getToken(code);
@@ -54,14 +54,14 @@ export const exchangeGoogleToken = async (
       throw new AppError("Incomplete tokens received from Google", 400);
     }
 
-    console.log("🔧 Token details:", {
+    console.log("Token details:", {
       hasAccessToken: !!tokens.access_token,
       hasRefreshToken: !!tokens.refresh_token,
       accessTokenLength: tokens.access_token.length,
       refreshTokenLength: tokens.refresh_token.length,
     });
 
-    // **FIX: Verify tokens and get user info**
+    // Verify tokens and get user info**
     oauth2Client.setCredentials(tokens);
     const oauth2 = google.oauth2({
       auth: oauth2Client,
@@ -81,7 +81,7 @@ export const exchangeGoogleToken = async (
       throw new AppError("Failed to get email from Google account", 400);
     }
 
-    // **FIX: Test Gmail API access**
+    // Test Gmail API access**
     try {
       const gmail = google.gmail({ version: "v1", auth: oauth2Client });
       // Simple test to verify Gmail access
@@ -135,7 +135,7 @@ export const connectGoogleAccount = async (
       refreshTokenLength: refreshToken.length,
     });
 
-    // **FIX: Validate tokens before storing**
+    // Validate tokens before storing**
     const oauth2Client = new OAuth2(
       process.env.GOOGLE_CLIENT_ID!,
       process.env.GOOGLE_CLIENT_SECRET!,
@@ -151,23 +151,23 @@ export const connectGoogleAccount = async (
       // Test token validity
       const tokenInfo = await oauth2Client.getTokenInfo(accessToken);
       console.log(
-        "✅ Token is valid, expires at:",
+        "Token is valid, expires at:",
         new Date(tokenInfo.expiry_date!)
       );
 
       // Test Gmail access
       const gmail = google.gmail({ version: "v1", auth: oauth2Client });
       await gmail.users.getProfile({ userId: "me" });
-      console.log("✅ Gmail access verified");
+      console.log("Gmail access verified");
     } catch (validationError: any) {
-      console.error("❌ Token validation failed:", validationError);
+      console.error("Token validation failed:", validationError);
       throw new AppError(
         "Google tokens are invalid. Please reconnect your Google account.",
         400
       );
     }
 
-    // **FIX: Update user with validated tokens**
+    // Update user with validated tokens**
     const updatedUser = await prisma.user.update({
       where: { id: req.user.id },
       data: {
@@ -203,7 +203,7 @@ export const connectGoogleAccount = async (
 };
 
 /**
- * NEW: Disconnect Google account
+ * Disconnect Google account
  */
 export const disconnectGoogleAccount = async (
   req: AuthRequest,

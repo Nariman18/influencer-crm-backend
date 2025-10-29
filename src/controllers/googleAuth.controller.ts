@@ -215,7 +215,7 @@ export const disconnectGoogleAccount = async (
       throw new AppError("Not authenticated", 401);
     }
 
-    console.log("🔓 Disconnecting Google account for user:", req.user.id);
+    console.log("Disconnecting Google account for user:", req.user.id);
 
     await prisma.user.update({
       where: { id: req.user.id },

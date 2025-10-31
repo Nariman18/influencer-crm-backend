@@ -82,35 +82,8 @@ class RedisQueueService {
       this.initializeQueueAndWorker();
       return;
     } catch (error: any) {
-      console.log("❌ Simple connection failed:", error.message);
+      console.log("Simple connection failed:", error.message);
       throw error;
-    }
-  }
-
-  private getRedisOptions(
-    useTLS: boolean,
-    isRedisCloud: boolean
-  ): RedisOptions {
-    const baseOptions: RedisOptions = {
-      maxRetriesPerRequest: 2,
-      lazyConnect: true,
-      connectTimeout: 5000,
-      commandTimeout: 3000,
-    };
-
-    if (useTLS && isRedisCloud) {
-      return {
-        ...baseOptions,
-        tls: {
-          rejectUnauthorized: false,
-          checkServerIdentity: () => undefined, // Skip hostname verification
-        },
-      };
-    } else {
-      return {
-        ...baseOptions,
-        tls: undefined,
-      };
     }
   }
 
@@ -118,7 +91,7 @@ class RedisQueueService {
     if (!this.connection) return;
 
     this.connection.on("error", (error) => {
-      console.error("❌ Redis connection error:", error.message);
+      console.error("Redis connection error:", error.message);
       this.isConnected = false;
     });
 
@@ -194,10 +167,9 @@ class RedisQueueService {
         console.log(`📧 Processing email job ${job.id} to ${to}`);
 
         try {
-          // Update email status to PROCESSING
           await prisma.email.update({
             where: { id: emailRecordId },
-            data: { status: EmailStatus.PROCESSING },
+            data: { status: "PROCESSING" as any },
           });
 
           // Send the email using your existing EmailService
@@ -209,16 +181,16 @@ class RedisQueueService {
             influencerName
           );
 
-          // Update email record with success
+          // Email record with success
           await prisma.email.update({
             where: { id: emailRecordId },
             data: {
-              status: EmailStatus.SENT,
+              status: "SENT" as any,
               sentAt: result.sentAt,
             },
           });
 
-          // Update influencer status
+          // Influencer status
           await this.updateInfluencerStatus(influencerId);
 
           console.log(`✅ Completed email job ${job.id}`);
@@ -229,7 +201,7 @@ class RedisQueueService {
           await prisma.email.update({
             where: { id: emailRecordId },
             data: {
-              status: EmailStatus.FAILED,
+              status: "FAILED" as any,
               errorMessage:
                 error instanceof Error ? error.message : "Unknown error",
             },
@@ -298,7 +270,7 @@ class RedisQueueService {
 
       await prisma.email.update({
         where: { id: jobData.emailRecordId },
-        data: { status: EmailStatus.QUEUED },
+        data: { status: "QUEUED" as any },
       });
 
       console.log(`📨 Email job queued: ${job.id} for ${jobData.to}`);
@@ -327,7 +299,7 @@ class RedisQueueService {
       await prisma.email.update({
         where: { id: jobData.emailRecordId },
         data: {
-          status: EmailStatus.SENT,
+          status: "SENT" as any,
           sentAt: result.sentAt,
         },
       });
@@ -342,7 +314,7 @@ class RedisQueueService {
       await prisma.email.update({
         where: { id: jobData.emailRecordId },
         data: {
-          status: EmailStatus.FAILED,
+          status: "FAILED" as any,
           errorMessage:
             error instanceof Error ? error.message : "Unknown error",
         },

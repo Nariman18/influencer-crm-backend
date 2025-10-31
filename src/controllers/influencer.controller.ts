@@ -73,31 +73,57 @@ export const getInfluencers = async (
     const search = req.query.search as string | undefined;
     const hasEmail = req.query.hasEmail as string | undefined;
 
+    console.log("🔍 Backend received query params:", {
+      page,
+      limit,
+      status,
+      search,
+      hasEmail,
+    });
+
     const skip = (page - 1) * limit;
 
-    const where: any = {};
+    // Build base conditions
+    const conditions: any[] = [];
 
-    // Add status filter
+    // Add status condition
     if (status) {
-      where.status = status;
+      conditions.push({ status });
     }
 
-    // Add search filter
+    // Add search condition
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: "insensitive" as const } },
-        { email: { contains: search, mode: "insensitive" as const } },
-        { instagramHandle: { contains: search, mode: "insensitive" as const } },
-      ];
+      conditions.push({
+        OR: [
+          { name: { contains: search, mode: "insensitive" as const } },
+          { email: { contains: search, mode: "insensitive" as const } },
+          {
+            instagramHandle: { contains: search, mode: "insensitive" as const },
+          },
+        ],
+      });
     }
 
-    // Add email filter - SIMPLE AND CLEAR
+    // Add email condition
     if (hasEmail === "true") {
-      where.email = { not: null }; // This should be enough since empty strings are also filtered
-      where.email = { not: "" }; // But to be safe, we'll add both in separate statements
+      // Email is NOT null AND NOT empty string
+      conditions.push({
+        AND: [{ email: { not: null } }, { email: { not: "" } }],
+      });
     } else if (hasEmail === "false") {
-      where.OR = [...(where.OR || []), { email: null }, { email: "" }];
+      // Email IS null OR IS empty string
+      conditions.push({
+        OR: [{ email: null }, { email: "" }],
+      });
     }
+
+    // Build final where clause
+    const where = conditions.length > 0 ? { AND: conditions } : {};
+
+    console.log(
+      "🔍 Final Prisma where clause:",
+      JSON.stringify(where, null, 2)
+    );
 
     const [influencers, total] = await Promise.all([
       prisma.influencer.findMany({
@@ -122,6 +148,14 @@ export const getInfluencers = async (
       }),
       prisma.influencer.count({ where }),
     ]);
+
+    console.log("📊 Query results:", {
+      totalCount: total,
+      returnedCount: influencers.length,
+      sampleEmails: influencers
+        .slice(0, 5)
+        .map((i) => ({ email: i.email, hasEmail: !!i.email })),
+    });
 
     const response: PaginatedResponse<(typeof influencers)[0]> = {
       data: influencers,

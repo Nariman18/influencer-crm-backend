@@ -1,5 +1,15 @@
-import { Request } from 'express';
-import { UserRole } from '@prisma/client';
+import { Request } from "express";
+import { UserRole } from "@prisma/client";
+
+export enum EmailStatus {
+  PENDING = "PENDING",
+  QUEUED = "QUEUED",
+  PROCESSING = "PROCESSING",
+  SENT = "SENT",
+  FAILED = "FAILED",
+  OPENED = "OPENED",
+  REPLIED = "REPLIED",
+}
 
 export interface AuthUser {
   id: string;
@@ -16,7 +26,7 @@ export interface PaginationParams {
   page: number;
   limit: number;
   sortBy?: string;
-  sortOrder?: 'asc' | 'desc';
+  sortOrder?: "asc" | "desc";
 }
 
 export interface PaginatedResponse<T> {
@@ -64,4 +74,3 @@ export interface ImportInfluencerData {
   country?: string;
   notes?: string;
 }
-

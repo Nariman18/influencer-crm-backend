@@ -3,6 +3,9 @@ import cors from "cors";
 import dotenv from "dotenv";
 import routes from "./routes";
 import { errorHandler } from "./middleware/errorHandler";
+import { redisQueue } from "./lib/redis-queue";
+
+redisQueue.setupEventListeners();
 
 dotenv.config();
 
@@ -80,18 +83,16 @@ server.on("error", (error: Error) => {
 });
 
 // Handle process termination
-process.on("SIGTERM", () => {
-  console.log("SIGTERM received, shutting down gracefully");
-  server.close(() => {
-    console.log("Process terminated");
-  });
+process.on("SIGTERM", async () => {
+  console.log("SIGTERM received, shutting down queue...");
+  await redisQueue.cleanup();
+  process.exit(0);
 });
 
-process.on("SIGINT", () => {
-  console.log("SIGINT received, shutting down gracefully");
-  server.close(() => {
-    console.log("Process terminated");
-  });
+process.on("SIGINT", async () => {
+  console.log("SIGINT received, shutting down queue...");
+  await redisQueue.cleanup();
+  process.exit(0);
 });
 
 export default app;

@@ -39,6 +39,8 @@ enum ContractStatus {
 
 enum EmailStatus {
   PENDING
+  QUEUED    
+  PROCESSING 
   SENT
   FAILED
   OPENED

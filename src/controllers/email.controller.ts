@@ -4,11 +4,12 @@ import { AuthRequest, PaginatedResponse } from "../types";
 import { AppError } from "../middleware/errorHandler";
 import { google } from "googleapis";
 import { EmailStatus } from "@prisma/client";
+import { redisQueue } from "../lib/redis-queue";
 
 const OAuth2 = google.auth.OAuth2;
 
-// Email service with Gmail API implementation (no SMTP)
-class EmailService {
+// Email service with Gmail API implementation
+export class EmailService {
   /**
    * Validate Gmail access and refresh tokens if needed
    */
@@ -186,7 +187,7 @@ class EmailService {
 
         const email = emailLines.join("\r\n").trim();
 
-        // Encode the email in base64 URL-safe format (required by Gmail API)
+        // Encoding the email in base64 URL-safe format (required by Gmail API)
         const base64Email = Buffer.from(email)
           .toString("base64")
           .replace(/\+/g, "-")
@@ -359,7 +360,7 @@ export const validateEmailConfig = async (
       throw new AppError("Not authenticated", 401);
     }
 
-    console.log("🔧 Validating email configuration for user:", req.user.id);
+    console.log("Validating email configuration for user:", req.user.id);
 
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
@@ -386,13 +387,13 @@ export const validateEmailConfig = async (
       return;
     }
 
-    console.log("🔧 Testing Gmail API configuration...");
+    console.log("Testing Gmail API configuration...");
 
     try {
       // Test the configuration by validating Gmail access
       await EmailService.validateGmailAccess(req.user.id);
 
-      console.log("✅ Gmail API configuration is valid");
+      console.log("Gmail API configuration is valid");
 
       res.json({
         isValid: true,
@@ -402,7 +403,7 @@ export const validateEmailConfig = async (
         userName: user.name,
       });
     } catch (error) {
-      console.error("❌ Gmail API configuration test failed:", error);
+      console.error("Gmail API configuration test failed:", error);
 
       res.json({
         isValid: false,
@@ -415,7 +416,7 @@ export const validateEmailConfig = async (
       });
     }
   } catch (error) {
-    console.error("❌ Email configuration validation error:", error);
+    console.error("Email configuration validation error:", error);
     throw new AppError("Failed to validate email configuration", 500);
   }
 };
@@ -432,82 +433,11 @@ const replaceVariables = (
   return result;
 };
 
-export const getEmails = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
-  try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 20;
-    const influencerId = req.query.influencerId as string | undefined;
-    const status = req.query.status as EmailStatus | undefined;
-
-    const skip = (page - 1) * limit;
-
-    // Properly type the where clause with EmailStatus enum
-    const where: any = {
-      ...(influencerId && { influencerId }),
-    };
-
-    // Only add status filter if it's a valid EmailStatus
-    if (status && Object.values(EmailStatus).includes(status)) {
-      where.status = status;
-    }
-
-    const [emails, total] = await Promise.all([
-      prisma.email.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: "desc" },
-        include: {
-          influencer: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-              instagramHandle: true,
-            },
-          },
-          template: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-          sentBy: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-        },
-      }),
-      prisma.email.count({ where }),
-    ]);
-
-    const response: PaginatedResponse<(typeof emails)[0]> = {
-      data: emails,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
-
-    res.json(response);
-  } catch (error) {
-    throw new AppError("Failed to fetch emails", 500);
-  }
-};
-
 export const sendEmail = async (
   req: AuthRequest,
   res: Response
 ): Promise<void> => {
-  console.log(" ========== SEND EMAIL REQUEST STARTED (GMAIL API) ==========");
+  console.log(" ========== QUEUEING EMAIL REQUEST ==========");
 
   try {
     console.log("🔧 Send email request received from user:", req.user?.id);
@@ -641,89 +571,46 @@ export const sendEmail = async (
         sentById: req.user.id,
         subject,
         body,
-        status: "PENDING",
+        status: EmailStatus.PENDING, // Will be updated to QUEUED by the queue
       },
     });
 
     console.log("Email record created with ID:", email.id);
 
-    try {
-      console.log("Attempting to send email via Gmail API...");
-      const sendResult = await EmailService.sendEmail(
-        req.user.id,
-        influencer.email,
-        subject,
-        body,
-        influencer.name
-      );
+    // ADD TO REDIS QUEUE INSTEAD OF SENDING IMMEDIATELY
+    await redisQueue.addEmailJob({
+      userId: req.user.id,
+      to: influencer.email!,
+      subject,
+      body,
+      influencerName: influencer.name,
+      emailRecordId: email.id,
+      influencerId: influencer.id,
+    });
 
-      console.log(
-        "Email sent successfully via Gmail API:",
-        sendResult.messageId
-      );
+    console.log("Email queued successfully!");
 
-      // Update email record with success
-      const updatedEmail = await prisma.email.update({
-        where: { id: email.id },
-        data: {
-          status: "SENT",
-          sentAt: sendResult.sentAt,
-        },
-        include: {
-          influencer: true,
-          template: true,
-          sentBy: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
+    // Return the email record immediately
+    const queuedEmail = await prisma.email.findUnique({
+      where: { id: email.id },
+      include: {
+        influencer: true,
+        template: true,
+        sentBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
           },
         },
-      });
+      },
+    });
 
-      // Update influencer last contact date and advance pipeline status
-      await prisma.influencer.update({
-        where: { id: influencerId },
-        data: {
-          lastContactDate: new Date(),
-          ...(influencer.status === "PING_1" && { status: "PING_2" }),
-          ...(influencer.status === "PING_2" && { status: "PING_3" }),
-        },
-      });
-
-      console.log("Email process completed successfully!");
-      console.log("========== SEND EMAIL REQUEST COMPLETED ==========");
-      res.json(updatedEmail);
-    } catch (sendError) {
-      console.error("Email sending failed via Gmail API:", sendError);
-
-      // Update email record with failure
-      await prisma.email.update({
-        where: { id: email.id },
-        data: {
-          status: "FAILED",
-          errorMessage:
-            sendError instanceof Error ? sendError.message : "Unknown error",
-        },
-      });
-
-      console.error("Email sending error details:", {
-        error: sendError instanceof Error ? sendError.message : "Unknown",
-        stack: sendError instanceof Error ? sendError.stack : undefined,
-      });
-
-      throw new AppError(
-        `Failed to send email via Gmail API: ${
-          sendError instanceof Error ? sendError.message : "Unknown error"
-        }`,
-        500
-      );
-    }
+    res.json(queuedEmail);
   } catch (error) {
-    console.error("Send email controller error:", error);
+    console.error("Queue email controller error:", error);
     if (error instanceof AppError) throw error;
-    throw new AppError("Failed to send email", 500);
+    throw new AppError("Failed to queue email", 500);
   }
 };
 
@@ -758,9 +645,10 @@ export const bulkSendEmails = async (
       success: 0,
       failed: 0,
       errors: [] as Array<{ influencerId: string; error: string }>,
+      queued: [] as string[], // Track queued email IDs
     };
 
-    // Process emails sequentially to avoid rate limiting
+    // Process influencers and add to queue
     for (const influencerId of influencerIds) {
       try {
         const influencer = await prisma.influencer.findUnique({
@@ -794,53 +682,27 @@ export const bulkSendEmails = async (
             sentById: req.user.id,
             subject,
             body,
-            status: "PENDING",
+            status: EmailStatus.PENDING,
           },
         });
 
-        try {
-          // Send actual email via Gmail API
-          await EmailService.sendEmail(
-            req.user.id,
-            influencer.email,
+        // Add to Redis queue with staggered delay to avoid rate limits
+        const delayMs = results.success * 2000; // Stagger by 2 seconds each
+        await redisQueue.addEmailJob(
+          {
+            userId: req.user.id,
+            to: influencer.email!,
             subject,
             body,
-            influencer.name
-          );
+            influencerName: influencer.name,
+            emailRecordId: email.id,
+            influencerId: influencer.id,
+          },
+          delayMs
+        );
 
-          // Update email as sent
-          await prisma.email.update({
-            where: { id: email.id },
-            data: {
-              status: "SENT",
-              sentAt: new Date(),
-            },
-          });
-
-          // Update influencer
-          await prisma.influencer.update({
-            where: { id: influencerId },
-            data: {
-              lastContactDate: new Date(),
-              ...(influencer.status === "PING_1" && { status: "PING_2" }),
-              ...(influencer.status === "PING_2" && { status: "PING_3" }),
-            },
-          });
-
-          results.success++;
-        } catch (sendError) {
-          await prisma.email.update({
-            where: { id: email.id },
-            data: {
-              status: "FAILED",
-              errorMessage:
-                sendError instanceof Error
-                  ? sendError.message
-                  : "Unknown error",
-            },
-          });
-          throw sendError;
-        }
+        results.success++;
+        results.queued.push(email.id);
       } catch (error) {
         results.failed++;
         results.errors.push({
@@ -850,10 +712,85 @@ export const bulkSendEmails = async (
       }
     }
 
-    res.json(results);
+    res.json({
+      ...results,
+      message: `Queued ${results.success} emails for sending`,
+    });
   } catch (error) {
     if (error instanceof AppError) throw error;
-    throw new AppError("Failed to bulk send emails", 500);
+    throw new AppError("Failed to bulk queue emails", 500);
+  }
+};
+
+// Add this function to your email.controller.ts - BEFORE the sendEmail function
+export const getEmails = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const influencerId = req.query.influencerId as string | undefined;
+    const status = req.query.status as EmailStatus | undefined;
+
+    const skip = (page - 1) * limit;
+
+    // Properly type the where clause with EmailStatus enum
+    const where: any = {
+      ...(influencerId && { influencerId }),
+    };
+
+    // Only add status filter if it's a valid EmailStatus
+    if (status && Object.values(EmailStatus).includes(status)) {
+      where.status = status;
+    }
+
+    const [emails, total] = await Promise.all([
+      prisma.email.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: {
+          influencer: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              instagramHandle: true,
+            },
+          },
+          template: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          sentBy: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+      }),
+      prisma.email.count({ where }),
+    ]);
+
+    const response: PaginatedResponse<(typeof emails)[0]> = {
+      data: emails,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+
+    res.json(response);
+  } catch (error) {
+    throw new AppError("Failed to fetch emails", 500);
   }
 };
 

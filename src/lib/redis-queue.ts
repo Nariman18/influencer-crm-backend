@@ -30,14 +30,14 @@ class RedisQueueService {
       const redisUrl = process.env.REDIS_URL;
 
       if (!redisUrl) {
-        console.error("REDIS_URL is not defined in environment variables");
+        console.error("❌ REDIS_URL is not defined in environment variables");
         this.initializeFallback();
         return;
       }
 
       // Mask password for logging
       const maskedUrl = redisUrl.replace(/:([^:]+)@/, ":****@");
-      console.log(`Attempting to connect to Redis: ${maskedUrl}`);
+      console.log(`🔗 Attempting to connect to Redis: ${maskedUrl}`);
 
       const isRedisCloud =
         redisUrl.includes("redislabs.com") ||
@@ -47,13 +47,13 @@ class RedisQueueService {
       // Try different connection strategies
       await this.tryRedisConnection(redisUrl, isRedisCloud);
     } catch (error) {
-      console.error("Failed to initialize Redis queue:", error);
+      console.error("❌ Failed to initialize Redis queue:", error);
       this.initializeFallback();
     }
   }
 
   private async tryRedisConnection(redisUrl: string, isRedisCloud: boolean) {
-    console.log("Trying simple Redis connection...");
+    console.log("🔄 Trying simple Redis connection...");
 
     try {
       // Use optimized Redis options for Redis Cloud
@@ -72,11 +72,11 @@ class RedisQueueService {
 
       // Test with ping
       const result = await connection.ping();
-      console.log("Redis ping response:", result);
+      console.log("✅ Redis ping response:", result);
 
       this.connection = connection;
       this.isConnected = true;
-      console.log("Redis connected successfully");
+      console.log("✅ Redis connected successfully");
 
       this.setupConnectionEvents();
       this.initializeQueueAndWorker();
@@ -96,12 +96,12 @@ class RedisQueueService {
     });
 
     this.connection.on("close", () => {
-      console.log("Redis connection closed");
+      console.log("🔌 Redis connection closed");
       this.isConnected = false;
     });
 
     this.connection.on("end", () => {
-      console.log("Redis connection ended");
+      console.log("🔌 Redis connection ended");
       this.isConnected = false;
     });
   }
@@ -129,16 +129,16 @@ class RedisQueueService {
       this.worker = this.setupWorker();
       this.setupEventListeners();
 
-      console.log("Redis queue and worker initialized successfully");
+      console.log("✅ Redis queue and worker initialized successfully");
     } catch (error) {
-      console.error("Failed to initialize queue and worker:", error);
+      console.error("❌ Failed to initialize queue and worker:", error);
       this.initializeFallback();
     }
   }
 
   private initializeFallback() {
-    console.warn("Initializing Redis queue in FALLBACK MODE...");
-    console.warn("All emails will be sent directly (no queueing)");
+    console.warn("🔄 Initializing Redis queue in FALLBACK MODE...");
+    console.warn("📧 All emails will be sent directly (no queueing)");
 
     this.isConnected = false;
     this.connection = null;
@@ -164,13 +164,13 @@ class RedisQueueService {
           influencerId,
         } = job.data;
 
-        console.log(`Processing email job ${job.id} to ${to}`);
+        console.log(`📧 Processing email job ${job.id} to ${to}`);
 
         try {
-          // Use proper EmailStatus enum values
+          // TEMPORARY FIX: Use string literal with type casting
           await prisma.email.update({
             where: { id: emailRecordId },
-            data: { status: EmailStatus.PROCESSING },
+            data: { status: "PROCESSING" as any },
           });
 
           // Send the email using your existing EmailService
@@ -194,10 +194,10 @@ class RedisQueueService {
           // Update influencer status
           await this.updateInfluencerStatus(influencerId);
 
-          console.log(`Completed email job ${job.id}`);
+          console.log(`✅ Completed email job ${job.id}`);
           return { success: true, messageId: result.messageId };
         } catch (error) {
-          console.error(`Failed email job ${job.id}:`, error);
+          console.error(`❌ Failed email job ${job.id}:`, error);
 
           await prisma.email.update({
             where: { id: emailRecordId },
@@ -275,17 +275,17 @@ class RedisQueueService {
         delay: delayMs,
       });
 
-      // Use proper EmailStatus enum value
+      // TEMPORARY FIX: Use string literal with type casting
       await prisma.email.update({
         where: { id: jobData.emailRecordId },
-        data: { status: EmailStatus.QUEUED },
+        data: { status: "QUEUED" as any },
       });
 
       console.log(`📨 Email job queued: ${job.id} for ${jobData.to}`);
       return job.id!;
     } catch (error) {
       console.error(
-        "Failed to queue email, falling back to direct send:",
+        "❌ Failed to queue email, falling back to direct send:",
         error
       );
       return this.fallbackToDirectSend(jobData);
@@ -314,10 +314,10 @@ class RedisQueueService {
 
       await this.updateInfluencerStatus(jobData.influencerId);
 
-      console.log("Email sent directly (fallback)");
+      console.log("✅ Email sent directly (fallback)");
       return `direct-${Date.now()}`;
     } catch (error) {
-      console.error("Direct email send failed:", error);
+      console.error("❌ Direct email send failed:", error);
 
       await prisma.email.update({
         where: { id: jobData.emailRecordId },

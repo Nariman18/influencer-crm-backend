@@ -71,7 +71,7 @@ export const getInfluencers = async (
     const limit = parseInt(req.query.limit as string) || 20;
     const status = req.query.status as InfluencerStatus | undefined;
     const search = req.query.search as string | undefined;
-    const hasEmail = req.query.hasEmail as string | undefined; // New filter
+    const hasEmail = req.query.hasEmail as string | undefined;
 
     const skip = (page - 1) * limit;
 
@@ -86,12 +86,18 @@ export const getInfluencers = async (
           },
         ],
       }),
-      // Add email filter
+      // Enhanced email filter - handles both null and empty strings
       ...(hasEmail === "true" && {
-        email: { not: null }, // Only influencers with email
+        AND: [
+          { email: { not: null } },
+          { email: { not: "" } }, // Also exclude empty strings
+        ],
       }),
       ...(hasEmail === "false" && {
-        email: null, // Only influencers without email
+        OR: [
+          { email: null },
+          { email: "" }, // Also include empty strings
+        ],
       }),
     };
 

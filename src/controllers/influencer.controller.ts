@@ -75,31 +75,29 @@ export const getInfluencers = async (
 
     const skip = (page - 1) * limit;
 
-    const where = {
-      ...(status && { status }),
-      ...(search && {
-        OR: [
-          { name: { contains: search, mode: "insensitive" as const } },
-          { email: { contains: search, mode: "insensitive" as const } },
-          {
-            instagramHandle: { contains: search, mode: "insensitive" as const },
-          },
-        ],
-      }),
-      // Enhanced email filter - handles both null and empty strings
-      ...(hasEmail === "true" && {
-        AND: [
-          { email: { not: null } },
-          { email: { not: "" } }, // Also exclude empty strings
-        ],
-      }),
-      ...(hasEmail === "false" && {
-        OR: [
-          { email: null },
-          { email: "" }, // Also include empty strings
-        ],
-      }),
-    };
+    const where: any = {};
+
+    // Add status filter
+    if (status) {
+      where.status = status;
+    }
+
+    // Add search filter
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: "insensitive" as const } },
+        { email: { contains: search, mode: "insensitive" as const } },
+        { instagramHandle: { contains: search, mode: "insensitive" as const } },
+      ];
+    }
+
+    // Add email filter - SIMPLE AND CLEAR
+    if (hasEmail === "true") {
+      where.email = { not: null }; // This should be enough since empty strings are also filtered
+      where.email = { not: "" }; // But to be safe, we'll add both in separate statements
+    } else if (hasEmail === "false") {
+      where.OR = [...(where.OR || []), { email: null }, { email: "" }];
+    }
 
     const [influencers, total] = await Promise.all([
       prisma.influencer.findMany({

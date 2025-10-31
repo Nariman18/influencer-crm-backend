@@ -3,7 +3,7 @@ import { Queue, Worker, Job } from "bullmq";
 import IORedis, { RedisOptions } from "ioredis";
 import { EmailService } from "../controllers/email.controller";
 import prisma from "../config/prisma";
-import { EmailStatus, InfluencerStatus } from "@prisma/client";
+import { EmailStatus, InfluencerStatus } from "@prisma/client"; // Import the actual enums
 
 export interface EmailJobData {
   userId: string;
@@ -167,10 +167,10 @@ class RedisQueueService {
         console.log(`📧 Processing email job ${job.id} to ${to}`);
 
         try {
-          // TEMPORARY FIX: Use string literal with type casting
+          // FIXED: Use the actual Prisma enum value
           await prisma.email.update({
             where: { id: emailRecordId },
-            data: { status: "PROCESSING" as any },
+            data: { status: EmailStatus.PROCESSING }, // Use enum directly
           });
 
           // Send the email using your existing EmailService
@@ -186,7 +186,7 @@ class RedisQueueService {
           await prisma.email.update({
             where: { id: emailRecordId },
             data: {
-              status: EmailStatus.SENT,
+              status: EmailStatus.SENT, // Use enum directly
               sentAt: result.sentAt,
             },
           });
@@ -202,7 +202,7 @@ class RedisQueueService {
           await prisma.email.update({
             where: { id: emailRecordId },
             data: {
-              status: EmailStatus.FAILED,
+              status: EmailStatus.FAILED, // Use enum directly
               errorMessage:
                 error instanceof Error ? error.message : "Unknown error",
             },
@@ -275,10 +275,10 @@ class RedisQueueService {
         delay: delayMs,
       });
 
-      // TEMPORARY FIX: Use string literal with type casting
+      // FIXED: Use the actual Prisma enum value
       await prisma.email.update({
         where: { id: jobData.emailRecordId },
-        data: { status: "QUEUED" as any },
+        data: { status: EmailStatus.QUEUED }, // Use enum directly
       });
 
       console.log(`📨 Email job queued: ${job.id} for ${jobData.to}`);
@@ -307,7 +307,7 @@ class RedisQueueService {
       await prisma.email.update({
         where: { id: jobData.emailRecordId },
         data: {
-          status: EmailStatus.SENT,
+          status: EmailStatus.SENT, // Use enum directly
           sentAt: result.sentAt,
         },
       });
@@ -322,7 +322,7 @@ class RedisQueueService {
       await prisma.email.update({
         where: { id: jobData.emailRecordId },
         data: {
-          status: EmailStatus.FAILED,
+          status: EmailStatus.FAILED, // Use enum directly
           errorMessage:
             error instanceof Error ? error.message : "Unknown error",
         },

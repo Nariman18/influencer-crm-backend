@@ -67,11 +67,44 @@ model User {
   @@map("users")
 }
 
+// model Influencer {
+//   id              String            @id @default(uuid())
+//   name            String
+//   email           String?
+//   instagramHandle String?
+//   followers       Int?
+//   engagementRate  Float?
+//   niche           String?
+//   country         String?
+//   status          InfluencerStatus  @default(PING_1)
+//   notes           String?
+//   lastContactDate DateTime?
+//   createdAt       DateTime          @default(now())
+//   updatedAt       DateTime          @updatedAt
+  
+//   contracts       Contract[]
+//   emails          Email[]
+//   campaigns       CampaignInfluencer[]
+  
+//   @@map("influencers")
+// }
+
 model Influencer {
   id              String            @id @default(uuid())
   name            String
   email           String?
-  instagramHandle String?
+  instagramHandle String?           @unique
+  nickname        String?           // Nickname column
+  link            String?           // Link column (Instagram URL)
+  contactMethod   String?           // Способ связи
+  paymentMethod   String?           // Метод Платежа  
+  managerComment  String?           // Комент менеджера
+  statistics      String?           // Статистика
+  storyViews      String?           // Story Views
+  averageViews    String?           // Средние просмотры
+  engagementCount String?           // Кол-во проявлений
+  priceEUR        Float?            // Цена €
+  priceUSD        Float?           // Цена $
   followers       Int?
   engagementRate  Float?
   niche           String?

@@ -71,6 +71,7 @@ export const getInfluencers = async (
     const limit = parseInt(req.query.limit as string) || 20;
     const status = req.query.status as InfluencerStatus | undefined;
     const search = req.query.search as string | undefined;
+    const hasEmail = req.query.hasEmail as string | undefined; // New filter
 
     const skip = (page - 1) * limit;
 
@@ -84,6 +85,13 @@ export const getInfluencers = async (
             instagramHandle: { contains: search, mode: "insensitive" as const },
           },
         ],
+      }),
+      // Add email filter
+      ...(hasEmail === "true" && {
+        email: { not: null }, // Only influencers with email
+      }),
+      ...(hasEmail === "false" && {
+        email: null, // Only influencers without email
       }),
     };
 

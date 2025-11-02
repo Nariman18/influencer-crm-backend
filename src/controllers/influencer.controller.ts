@@ -5,59 +5,108 @@ import { AppError } from "../middleware/errorHandler";
 import { InfluencerStatus } from "@prisma/client";
 
 // Helper function to check for duplicates
-
+// Helper function to check for duplicates
 const checkForDuplicates = async (
   email?: string,
   instagramHandle?: string,
   excludeId?: string
 ) => {
-  if (!email && !instagramHandle) return null;
+  try {
+    console.log("🔍 [BACKEND] checkForDuplicates called with:", {
+      email,
+      instagramHandle,
+      excludeId,
+    });
 
-  const orConditions = [];
+    // If no search criteria provided, return null
+    if (!email && !instagramHandle) {
+      console.log("🔍 [BACKEND] No search criteria provided");
+      return null;
+    }
 
-  if (email) {
-    orConditions.push({
-      email: {
-        equals: email,
-        mode: "insensitive" as const,
+    const orConditions = [];
+
+    if (email && email.trim() !== "") {
+      orConditions.push({
+        email: {
+          equals: email.trim(),
+          mode: "insensitive" as const,
+        },
+      });
+    }
+
+    if (instagramHandle && instagramHandle.trim() !== "") {
+      orConditions.push({
+        instagramHandle: {
+          equals: instagramHandle.trim(),
+          mode: "insensitive" as const,
+        },
+      });
+    }
+
+    // If no valid conditions after trimming, return null
+    if (orConditions.length === 0) {
+      console.log("🔍 [BACKEND] No valid search conditions after trimming");
+      return null;
+    }
+
+    console.log(
+      "🔍 [BACKEND] Searching with conditions:",
+      JSON.stringify(orConditions)
+    );
+
+    const whereClause: any = {
+      AND: [...(orConditions.length > 0 ? [{ OR: orConditions }] : [])],
+    };
+
+    // Only add excludeId if it's provided and valid
+    if (excludeId && excludeId.trim() !== "") {
+      whereClause.AND.push({ id: { not: excludeId } });
+    }
+
+    console.log(
+      "🔍 [BACKEND] Final WHERE clause:",
+      JSON.stringify(whereClause)
+    );
+
+    const existing = await prisma.influencer.findFirst({
+      where: whereClause,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        instagramHandle: true,
+        status: true,
       },
     });
+
+    console.log("🔍 [BACKEND] Database query result:", existing);
+    return existing;
+  } catch (error) {
+    console.error("❌ [BACKEND] Error in checkForDuplicates:", error);
+
+    // If it's a database connection error or empty database, return null
+    // This allows the application to continue working even if database is empty
+    if (error instanceof Error) {
+      if (
+        error.message.includes("database") ||
+        error.message.includes("connection")
+      ) {
+        console.log("🔍 [BACKEND] Database issue, returning null");
+        return null;
+      }
+    }
+
+    throw error;
   }
-
-  if (instagramHandle) {
-    orConditions.push({
-      instagramHandle: {
-        equals: instagramHandle,
-        mode: "insensitive" as const,
-      },
-    });
-  }
-
-  const existing = await prisma.influencer.findFirst({
-    where: {
-      AND: [
-        { id: { not: excludeId } }, // Exclude current influencer when updating
-        ...(orConditions.length > 0 ? [{ OR: orConditions }] : []),
-      ],
-    },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      instagramHandle: true,
-      status: true,
-    },
-  });
-
-  return existing;
 };
 
 const formatDuplicateResponse = (duplicate: any) => {
   return {
     id: duplicate.id,
     name: duplicate.name,
-    email: duplicate.email ?? undefined, // Convert null to undefined
-    instagramHandle: duplicate.instagramHandle ?? undefined, // Convert null to undefined
+    email: duplicate.email ?? undefined,
+    instagramHandle: duplicate.instagramHandle ?? undefined,
     status: duplicate.status,
   };
 };
@@ -71,60 +120,38 @@ export const getInfluencers = async (
     const limit = parseInt(req.query.limit as string) || 20;
     const status = req.query.status as InfluencerStatus | undefined;
     const search = req.query.search as string | undefined;
-    const hasEmail = req.query.hasEmail as string | undefined;
-
-    console.log("🔍 Backend received query params:", {
-      page,
-      limit,
-      status,
-      search,
-      hasEmail,
-    });
+    const emailFilter = req.query.emailFilter as string | undefined;
 
     const skip = (page - 1) * limit;
 
-    // Build base conditions
-    const conditions: any[] = [];
+    let where: any = {};
 
-    // Add status condition
+    // Status filter
     if (status) {
-      conditions.push({ status });
+      where.status = status;
     }
 
-    // Add search condition
+    // Search filter
     if (search) {
-      conditions.push({
-        OR: [
-          { name: { contains: search, mode: "insensitive" as const } },
-          { email: { contains: search, mode: "insensitive" as const } },
-          {
-            instagramHandle: { contains: search, mode: "insensitive" as const },
-          },
-        ],
-      });
+      where.OR = [
+        { name: { contains: search, mode: "insensitive" } },
+        { email: { contains: search, mode: "insensitive" } },
+        { instagramHandle: { contains: search, mode: "insensitive" } },
+        { nickname: { contains: search, mode: "insensitive" } },
+      ];
     }
 
-    // Add email condition
-    if (hasEmail === "true") {
-      // Email is NOT null AND NOT empty string
-      conditions.push({
-        AND: [{ email: { not: null } }, { email: { not: "" } }],
-      });
-    } else if (hasEmail === "false") {
-      // Email IS null OR IS empty string
-      conditions.push({
-        OR: [{ email: null }, { email: "" }],
-      });
+    // Email filter
+    if (emailFilter) {
+      const normalizedEmailFilter = emailFilter?.toLowerCase().trim();
+      if (normalizedEmailFilter === "has-email") {
+        where.email = { not: null };
+      } else if (normalizedEmailFilter === "no-email") {
+        where.email = null;
+      }
     }
 
-    // Build final where clause
-    const where = conditions.length > 0 ? { AND: conditions } : {};
-
-    console.log(
-      "🔍 Final Prisma where clause:",
-      JSON.stringify(where, null, 2)
-    );
-
+    // Get the data
     const [influencers, total] = await Promise.all([
       prisma.influencer.findMany({
         where,
@@ -133,29 +160,16 @@ export const getInfluencers = async (
         orderBy: { createdAt: "desc" },
         include: {
           contracts: {
-            select: {
-              id: true,
-              status: true,
-              amount: true,
-            },
+            select: { id: true, status: true, amount: true },
           },
-          _count: {
-            select: {
-              emails: true,
-            },
+          manager: {
+            select: { id: true, name: true, email: true },
           },
+          _count: { select: { emails: true } },
         },
       }),
       prisma.influencer.count({ where }),
     ]);
-
-    console.log("📊 Query results:", {
-      totalCount: total,
-      returnedCount: influencers.length,
-      sampleEmails: influencers
-        .slice(0, 5)
-        .map((i) => ({ email: i.email, hasEmail: !!i.email })),
-    });
 
     const response: PaginatedResponse<(typeof influencers)[0]> = {
       data: influencers,
@@ -169,6 +183,7 @@ export const getInfluencers = async (
 
     res.json(response);
   } catch (error) {
+    console.error("❌ Error fetching influencers:", error);
     throw new AppError("Failed to fetch influencers", 500);
   }
 };
@@ -202,6 +217,9 @@ export const getInfluencer = async (
             campaign: true,
           },
         },
+        manager: {
+          select: { id: true, name: true, email: true },
+        },
       },
     });
 
@@ -226,10 +244,19 @@ export const createInfluencer = async (
       email,
       instagramHandle,
       followers,
-      engagementRate,
-      niche,
       country,
       notes,
+      nickname,
+      link,
+      contactMethod,
+      paymentMethod,
+      managerComment,
+      statistics,
+      storyViews,
+      averageViews,
+      engagementCount,
+      priceEUR,
+      priceUSD,
     } = req.body;
 
     // Enhanced duplicate validation
@@ -264,11 +291,24 @@ export const createInfluencer = async (
         email,
         instagramHandle,
         followers,
-        engagementRate,
-        niche,
+        // REMOVED: engagementRate,
+        // REMOVED: niche,
         country,
         notes,
+        nickname,
+        link,
+        contactMethod,
+        paymentMethod,
+        managerComment,
+        statistics,
+        storyViews,
+        averageViews,
+        engagementCount,
+        priceEUR,
+        priceUSD,
         status: "PING_1",
+        // Set the current user as manager
+        managerId: req.user?.id,
       },
     });
 
@@ -290,12 +330,23 @@ export const updateInfluencer = async (
       email,
       instagramHandle,
       followers,
-      engagementRate,
-      niche,
+      // REMOVED: engagementRate,
+      // REMOVED: niche,
       country,
       status,
       notes,
       lastContactDate,
+      nickname,
+      link,
+      contactMethod,
+      paymentMethod,
+      managerComment,
+      statistics,
+      storyViews,
+      averageViews,
+      engagementCount,
+      priceEUR,
+      priceUSD,
     } = req.body;
 
     // Check for duplicates when updating (exclude current influencer)
@@ -331,12 +382,23 @@ export const updateInfluencer = async (
         email,
         instagramHandle,
         followers,
-        engagementRate,
-        niche,
+        // REMOVED: engagementRate,
+        // REMOVED: niche,
         country,
         status,
         notes,
         lastContactDate,
+        nickname,
+        link,
+        contactMethod,
+        paymentMethod,
+        managerComment,
+        statistics,
+        storyViews,
+        averageViews,
+        engagementCount,
+        priceEUR,
+        priceUSD,
       },
     });
 
@@ -488,11 +550,24 @@ export const importInfluencers = async (
             email: data.email,
             instagramHandle: data.instagramHandle,
             followers: data.followers,
-            engagementRate: data.engagementRate,
-            niche: data.niche,
+            // REMOVED: engagementRate: data.engagementRate,
+            // REMOVED: niche: data.niche,
             country: data.country,
             notes: data.notes,
+            nickname: data.nickname,
+            link: data.link,
+            contactMethod: data.contactMethod,
+            paymentMethod: data.paymentMethod,
+            managerComment: data.managerComment,
+            statistics: data.statistics,
+            storyViews: data.storyViews,
+            averageViews: data.averageViews,
+            engagementCount: data.engagementCount,
+            priceEUR: data.priceEUR,
+            priceUSD: data.priceUSD,
             status: "PING_1",
+            // Set the current user as manager for imported influencers
+            managerId: req.user?.id,
           },
         });
 

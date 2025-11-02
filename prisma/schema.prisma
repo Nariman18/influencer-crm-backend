@@ -63,6 +63,7 @@ model User {
   campaigns         Campaign[]
   emailsSent        Email[]
   auditLogs         AuditLog[]
+  managedInfluencers Influencer[] 
   
   @@map("users")
 }
@@ -106,14 +107,16 @@ model Influencer {
   priceEUR        Float?            // Цена €
   priceUSD        Float?           // Цена $
   followers       Int?
-  engagementRate  Float?
-  niche           String?
   country         String?
   status          InfluencerStatus  @default(PING_1)
   notes           String?
   lastContactDate DateTime?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
+  
+  // Add manager relationship
+  managerId       String?
+  manager         User?             @relation(fields: [managerId], references: [id], onDelete: SetNull)
   
   contracts       Contract[]
   emails          Email[]

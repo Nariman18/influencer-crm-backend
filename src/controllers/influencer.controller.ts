@@ -259,6 +259,14 @@ export const createInfluencer = async (
       priceUSD,
     } = req.body;
 
+    console.log("🔍 [BACKEND] createInfluencer called with:", {
+      name,
+      email,
+      instagramHandle,
+      managerId: req.user?.id,
+      user: req.user,
+    });
+
     // Enhanced duplicate validation
     const duplicate = await checkForDuplicates(email, instagramHandle);
 
@@ -285,14 +293,20 @@ export const createInfluencer = async (
       });
     }
 
+    // Validate that user is authenticated and has an ID
+    if (!req.user?.id) {
+      console.error("❌ [BACKEND] No user ID found in request");
+      throw new AppError("User not authenticated", 401);
+    }
+
+    console.log("👤 [BACKEND] Setting managerId:", req.user.id);
+
     const influencer = await prisma.influencer.create({
       data: {
         name,
         email,
         instagramHandle,
         followers,
-        // REMOVED: engagementRate,
-        // REMOVED: niche,
         country,
         notes,
         nickname,
@@ -307,13 +321,27 @@ export const createInfluencer = async (
         priceEUR,
         priceUSD,
         status: "PING_1",
-        // Set the current user as manager
-        managerId: req.user?.id,
+        // Set the current user as manager - remove optional chaining
+        managerId: req.user.id, // Changed from req.user?.id to req.user.id
       },
+      // Include manager relation in response
+      include: {
+        manager: {
+          select: { id: true, name: true, email: true },
+        },
+      },
+    });
+
+    console.log("✅ [BACKEND] Influencer created successfully:", {
+      id: influencer.id,
+      name: influencer.name,
+      managerId: influencer.managerId,
+      manager: influencer.manager,
     });
 
     res.status(201).json(influencer);
   } catch (error) {
+    console.error("❌ [BACKEND] Error creating influencer:", error);
     if (error instanceof AppError) throw error;
     throw new AppError("Failed to create influencer", 500);
   }
@@ -330,8 +358,6 @@ export const updateInfluencer = async (
       email,
       instagramHandle,
       followers,
-      // REMOVED: engagementRate,
-      // REMOVED: niche,
       country,
       status,
       notes,
@@ -382,8 +408,6 @@ export const updateInfluencer = async (
         email,
         instagramHandle,
         followers,
-        // REMOVED: engagementRate,
-        // REMOVED: niche,
         country,
         status,
         notes,
@@ -399,6 +423,11 @@ export const updateInfluencer = async (
         engagementCount,
         priceEUR,
         priceUSD,
+      },
+      include: {
+        manager: {
+          select: { id: true, name: true, email: true },
+        },
       },
     });
 
@@ -550,8 +579,6 @@ export const importInfluencers = async (
             email: data.email,
             instagramHandle: data.instagramHandle,
             followers: data.followers,
-            // REMOVED: engagementRate: data.engagementRate,
-            // REMOVED: niche: data.niche,
             country: data.country,
             notes: data.notes,
             nickname: data.nickname,

@@ -36,6 +36,6 @@ router.post(
   influencerController.importInfluencers
 );
 router.post("/check-duplicates", influencerController.checkDuplicates);
-router.get("/test-production-auth", authenticate, testProductionAuth);
+router.get("/test-production-auth", testProductionAuth);
 
 export default router;

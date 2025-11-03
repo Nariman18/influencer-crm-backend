@@ -239,6 +239,33 @@ export const createInfluencer = async (
   res: Response
 ): Promise<void> => {
   try {
+    console.log("🎯 [ROUTE DEBUG] === CREATE INFLUENCER ROUTE REACHED ===");
+
+    // CRITICAL: Check if middleware actually ran
+    console.log("🎯 [ROUTE DEBUG] req.user:", req.user);
+    console.log("🎯 [ROUTE DEBUG] req.user exists:", !!req.user);
+    console.log("🎯 [ROUTE DEBUG] req.user ID:", req.user?.id);
+    console.log("🎯 [ROUTE DEBUG] Environment:", process.env.NODE_ENV);
+
+    if (!req.user) {
+      console.error(
+        "🚨 [ROUTE DEBUG] CRITICAL: req.user is NULL in route handler!"
+      );
+      console.error(
+        "🚨 [ROUTE DEBUG] This means authentication middleware didn't run or failed silently"
+      );
+      console.error("🚨 [ROUTE DEBUG] Headers:", {
+        authorization: req.headers.authorization ? "Present" : "Missing",
+        "content-type": req.headers["content-type"],
+      });
+
+      res.status(401).json({
+        error: "Authentication failed - req.user is null",
+        debug: "Check if authentication middleware is executing",
+      });
+      return;
+    }
+
     const {
       name,
       email,
@@ -321,8 +348,8 @@ export const createInfluencer = async (
         priceEUR,
         priceUSD,
         status: "PING_1",
-        // Set the current user as manager - remove optional chaining
-        managerId: req.user.id, // Changed from req.user?.id to req.user.id
+        // Set the current user as manager
+        managerId: req.user.id,
       },
       // Include manager relation in response
       include: {
@@ -332,11 +359,14 @@ export const createInfluencer = async (
       },
     });
 
-    console.log("✅ [BACKEND] Influencer created successfully:", {
+    console.log("✅ [PRODUCTION CREATE] SUCCESS - Influencer created!");
+    console.log("✅ [PRODUCTION CREATE] Final result:", {
       id: influencer.id,
       name: influencer.name,
       managerId: influencer.managerId,
       manager: influencer.manager,
+      hasManager: !!influencer.manager,
+      managerName: influencer.manager?.name || "NO MANAGER",
     });
 
     res.status(201).json(influencer);

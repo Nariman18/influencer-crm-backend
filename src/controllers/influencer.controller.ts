@@ -405,8 +405,8 @@ export const createInfluencer = async (
       },
     });
 
-    console.log("✅ [PRODUCTION CREATE] SUCCESS - Influencer created!");
-    console.log("✅ [PRODUCTION CREATE] Final result:", {
+    console.log("[PRODUCTION CREATE] SUCCESS - Influencer created!");
+    console.log("[PRODUCTION CREATE] Final result:", {
       id: influencer.id,
       name: influencer.name,
       managerId: influencer.managerId,

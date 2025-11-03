@@ -171,6 +171,16 @@ export const getInfluencers = async (
       prisma.influencer.count({ where }),
     ]);
 
+    console.log("📊 [GET INFLUENCERS] Manager relationships:");
+    influencers.forEach((inf, index) => {
+      console.log(`   ${index + 1}. ${inf.name}:`, {
+        managerId: inf.managerId,
+        manager: inf.manager,
+        hasManager: !!inf.manager,
+        managerName: inf.manager?.name || "NO MANAGER",
+      });
+    });
+
     const response: PaginatedResponse<(typeof influencers)[0]> = {
       data: influencers,
       pagination: {
@@ -185,6 +195,65 @@ export const getInfluencers = async (
   } catch (error) {
     console.error("❌ Error fetching influencers:", error);
     throw new AppError("Failed to fetch influencers", 500);
+  }
+};
+
+export const influencerTest = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
+  try {
+    console.log("🔍 [PRODUCTION DEBUG] Testing manager relationships");
+
+    // Get the latest 5 influencers with manager relations
+    const influencers = await prisma.influencer.findMany({
+      take: 5,
+      orderBy: { createdAt: "desc" },
+      include: {
+        manager: {
+          select: { id: true, name: true, email: true },
+        },
+      },
+    });
+
+    // Also test a specific query like your GET endpoint
+    const testInfluencers = await prisma.influencer.findMany({
+      where: {},
+      take: 3,
+      orderBy: { createdAt: "desc" },
+      include: {
+        contracts: {
+          select: { id: true, status: true, amount: true },
+        },
+        manager: {
+          select: { id: true, name: true, email: true },
+        },
+        _count: { select: { emails: true } },
+      },
+    });
+
+    res.json({
+      success: true,
+      environment: process.env.NODE_ENV,
+      timestamp: new Date().toISOString(),
+      latestInfluencers: influencers.map((inf) => ({
+        id: inf.id,
+        name: inf.name,
+        managerId: inf.managerId,
+        manager: inf.manager,
+        hasManager: !!inf.manager,
+      })),
+      testQueryResults: testInfluencers.map((inf) => ({
+        id: inf.id,
+        name: inf.name,
+        managerId: inf.managerId,
+        manager: inf.manager,
+        hasManager: !!inf.manager,
+      })),
+    });
+  } catch (error) {
+    console.error("❌ [PRODUCTION DEBUG] Error:", error);
+    res.status(500).json({ error: "Debug failed" });
   }
 };
 

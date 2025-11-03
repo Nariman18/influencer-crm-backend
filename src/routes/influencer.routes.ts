@@ -10,6 +10,7 @@ router.use(authenticate);
 
 router.get("/", influencerController.getInfluencers);
 router.get("/:id", influencerController.getInfluencer);
+router.get("/debug/manager-test", influencerController.influencerTest);
 router.post(
   "/",
   auditLog("CREATE", "INFLUENCER"),

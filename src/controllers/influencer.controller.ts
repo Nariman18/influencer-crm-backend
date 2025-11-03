@@ -367,42 +367,32 @@ export const createInfluencer = async (
       throw new AppError("User not authenticated", 401);
     }
 
-    console.log("👤 [BACKEND] Setting managerId:", req.user.id);
-
-    // CRITICAL FIX: Create the data object in a way that Prisma can't ignore managerId
-    const influencerData: any = {
-      name,
-      email: email || null,
-      instagramHandle: instagramHandle || null,
-      followers: followers ? parseInt(followers) : null,
-      country: country || null,
-      notes: notes || null,
-      nickname: nickname || null,
-      link: link || null,
-      contactMethod: contactMethod || null,
-      paymentMethod: paymentMethod || null,
-      managerComment: managerComment || null,
-      statistics: statistics || null,
-      storyViews: storyViews || null,
-      averageViews: averageViews || null,
-      engagementCount: engagementCount || null,
-      priceEUR: priceEUR ? parseFloat(priceEUR) : null,
-      priceUSD: priceUSD ? parseFloat(priceUSD) : null,
-      status: "PING_1" as InfluencerStatus,
-      // FORCE include managerId - use different approaches
-      managerId: req.user.id,
-    };
-
-    // Log the exact data being sent to Prisma
     console.log(
-      "📝 [PRODUCTION CREATE] Data object before Prisma:",
-      JSON.stringify(influencerData, null, 2)
+      "👤 [BACKEND] Setting manager via relation connection:",
+      req.user.id
     );
 
-    // Try creating with explicit data typing
+    // CRITICAL FIX: Use ONLY the relation connection, NOT managerId
     const influencer = await prisma.influencer.create({
       data: {
-        ...influencerData,
+        name,
+        email: email || null,
+        instagramHandle: instagramHandle || null,
+        followers: followers ? parseInt(followers) : null,
+        country: country || null,
+        notes: notes || null,
+        nickname: nickname || null,
+        link: link || null,
+        contactMethod: contactMethod || null,
+        paymentMethod: paymentMethod || null,
+        managerComment: managerComment || null,
+        statistics: statistics || null,
+        storyViews: storyViews || null,
+        averageViews: averageViews || null,
+        engagementCount: engagementCount || null,
+        priceEUR: priceEUR ? parseFloat(priceEUR) : null,
+        priceUSD: priceUSD ? parseFloat(priceUSD) : null,
+        status: "PING_1" as InfluencerStatus,
 
         manager: {
           connect: { id: req.user.id },

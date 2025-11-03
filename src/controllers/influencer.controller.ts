@@ -198,65 +198,6 @@ export const getInfluencers = async (
   }
 };
 
-export const influencerTest = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
-  try {
-    console.log("🔍 [PRODUCTION DEBUG] Testing manager relationships");
-
-    // Get the latest 5 influencers with manager relations
-    const influencers = await prisma.influencer.findMany({
-      take: 5,
-      orderBy: { createdAt: "desc" },
-      include: {
-        manager: {
-          select: { id: true, name: true, email: true },
-        },
-      },
-    });
-
-    // Also test a specific query like your GET endpoint
-    const testInfluencers = await prisma.influencer.findMany({
-      where: {},
-      take: 3,
-      orderBy: { createdAt: "desc" },
-      include: {
-        contracts: {
-          select: { id: true, status: true, amount: true },
-        },
-        manager: {
-          select: { id: true, name: true, email: true },
-        },
-        _count: { select: { emails: true } },
-      },
-    });
-
-    res.json({
-      success: true,
-      environment: process.env.NODE_ENV,
-      timestamp: new Date().toISOString(),
-      latestInfluencers: influencers.map((inf) => ({
-        id: inf.id,
-        name: inf.name,
-        managerId: inf.managerId,
-        manager: inf.manager,
-        hasManager: !!inf.manager,
-      })),
-      testQueryResults: testInfluencers.map((inf) => ({
-        id: inf.id,
-        name: inf.name,
-        managerId: inf.managerId,
-        manager: inf.manager,
-        hasManager: !!inf.manager,
-      })),
-    });
-  } catch (error) {
-    console.error("❌ [PRODUCTION DEBUG] Error:", error);
-    res.status(500).json({ error: "Debug failed" });
-  }
-};
-
 export const getInfluencer = async (
   req: AuthRequest,
   res: Response
@@ -534,6 +475,34 @@ export const deleteInfluencer = async (
   }
 };
 
+// Bulk multiple influencer delete
+export const bulkDeleteInfluencers = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
+  try {
+    const { ids } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw new AppError("Invalid influencer IDs", 400);
+    }
+
+    const result = await prisma.influencer.deleteMany({
+      where: {
+        id: { in: ids },
+      },
+    });
+
+    res.json({
+      message: `Deleted ${result.count} influencers`,
+      count: result.count,
+    });
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError("Failed to bulk delete influencers", 500);
+  }
+};
+
 export const bulkUpdateStatus = async (
   req: AuthRequest,
   res: Response
@@ -721,53 +690,5 @@ export const checkDuplicates = async (
     }
   } catch (error) {
     throw new AppError("Failed to check duplicates", 500);
-  }
-};
-
-// Add this to your influencer controller or auth controller
-export const testProductionAuth = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
-  try {
-    console.log("🔍 [PRODUCTION TEST] Testing production authentication:", {
-      hasUser: !!req.user,
-      user: req.user,
-      environment: process.env.NODE_ENV,
-      timestamp: new Date().toISOString(),
-    });
-
-    if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: "Not authenticated in production",
-        environment: process.env.NODE_ENV,
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
-
-    // Test database connection and user lookup
-    const dbUser = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      select: { id: true, name: true, email: true, role: true },
-    });
-
-    res.json({
-      success: true,
-      message: "Production authentication working correctly",
-      authUser: req.user,
-      dbUser: dbUser,
-      environment: process.env.NODE_ENV,
-      timestamp: new Date().toISOString(),
-      userMatch: dbUser?.id === req.user.id,
-    });
-  } catch (error) {
-    console.error("❌ [PRODUCTION TEST] Error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Production test failed",
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
   }
 };

@@ -239,3 +239,31 @@ export const deleteContract = async (
     throw new AppError("Failed to delete contract", 500);
   }
 };
+
+// Bulk multiple contract delete
+export const bulkDeleteContracts = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
+  try {
+    const { ids } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw new AppError("Invalid contract IDs", 400);
+    }
+
+    const result = await prisma.contract.deleteMany({
+      where: {
+        id: { in: ids },
+      },
+    });
+
+    res.json({
+      message: `Deleted ${result.count} contracts`,
+      count: result.count,
+    });
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError("Failed to bulk delete contracts", 500);
+  }
+};

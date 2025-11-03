@@ -2,7 +2,6 @@ import { Router } from "express";
 import * as influencerController from "../controllers/influencer.controller";
 import { authenticate } from "../middleware/auth";
 import { auditLog } from "../middleware/auditLog";
-import { testProductionAuth } from "../controllers/influencer.controller";
 
 const router = Router();
 
@@ -10,7 +9,6 @@ router.use(authenticate);
 
 router.get("/", influencerController.getInfluencers);
 router.get("/:id", influencerController.getInfluencer);
-router.get("/debug/manager-test", influencerController.influencerTest);
 router.post(
   "/",
   auditLog("CREATE", "INFLUENCER"),
@@ -27,6 +25,11 @@ router.delete(
   influencerController.deleteInfluencer
 );
 router.post(
+  "/bulk-delete",
+  auditLog("BULK_DELETE", "INFLUENCER"),
+  influencerController.bulkDeleteInfluencers
+);
+router.post(
   "/bulk/update-status",
   auditLog("BULK_UPDATE", "INFLUENCER"),
   influencerController.bulkUpdateStatus
@@ -37,6 +40,5 @@ router.post(
   influencerController.importInfluencers
 );
 router.post("/check-duplicates", influencerController.checkDuplicates);
-router.get("/test-production-auth", testProductionAuth);
 
 export default router;

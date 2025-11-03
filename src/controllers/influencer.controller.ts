@@ -417,7 +417,7 @@ export const createInfluencer = async (
 
     res.status(201).json(influencer);
   } catch (error) {
-    console.error("❌ [BACKEND] Error creating influencer:", error);
+    console.error("[BACKEND] Error creating influencer:", error);
     if (error instanceof AppError) throw error;
     throw new AppError("Failed to create influencer", 500);
   }

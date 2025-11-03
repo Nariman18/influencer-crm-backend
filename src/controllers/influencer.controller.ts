@@ -312,22 +312,11 @@ export const createInfluencer = async (
 
     // CRITICAL: Check if middleware actually ran
     console.log("🎯 [ROUTE DEBUG] req.user:", req.user);
-    console.log("🎯 [ROUTE DEBUG] req.user exists:", !!req.user);
-    console.log("🎯 [ROUTE DEBUG] req.user ID:", req.user?.id);
-    console.log("🎯 [ROUTE DEBUG] Environment:", process.env.NODE_ENV);
 
     if (!req.user) {
       console.error(
         "🚨 [ROUTE DEBUG] CRITICAL: req.user is NULL in route handler!"
       );
-      console.error(
-        "🚨 [ROUTE DEBUG] This means authentication middleware didn't run or failed silently"
-      );
-      console.error("🚨 [ROUTE DEBUG] Headers:", {
-        authorization: req.headers.authorization ? "Present" : "Missing",
-        "content-type": req.headers["content-type"],
-      });
-
       res.status(401).json({
         error: "Authentication failed - req.user is null",
         debug: "Check if authentication middleware is executing",
@@ -367,24 +356,7 @@ export const createInfluencer = async (
     const duplicate = await checkForDuplicates(email, instagramHandle);
 
     if (duplicate) {
-      let errorMessage = "Influencer already exists";
-
-      if (
-        duplicate.email?.toLowerCase() === email?.toLowerCase() &&
-        duplicate.instagramHandle?.toLowerCase() ===
-          instagramHandle?.toLowerCase()
-      ) {
-        errorMessage = `Influencer already exists with both email (${duplicate.email}) and Instagram handle (${duplicate.instagramHandle})`;
-      } else if (duplicate.email?.toLowerCase() === email?.toLowerCase()) {
-        errorMessage = `Influencer already exists with this email: ${duplicate.email}`;
-      } else if (
-        duplicate.instagramHandle?.toLowerCase() ===
-        instagramHandle?.toLowerCase()
-      ) {
-        errorMessage = `Influencer already exists with this Instagram handle: ${duplicate.instagramHandle}`;
-      }
-
-      throw new AppError(errorMessage, 400, {
+      throw new AppError("Influencer already exists", 400, {
         duplicate: formatDuplicateResponse(duplicate),
       });
     }
@@ -397,10 +369,10 @@ export const createInfluencer = async (
 
     console.log("👤 [BACKEND] Setting managerId:", req.user.id);
 
-    // FIX: Create a complete data object with ALL fields
-    const influencerData = {
+    // CRITICAL FIX: Create the data object in a way that Prisma can't ignore managerId
+    const influencerData: any = {
       name,
-      email: email || null, // Explicitly set to null if empty
+      email: email || null,
       instagramHandle: instagramHandle || null,
       followers: followers ? parseInt(followers) : null,
       country: country || null,
@@ -417,18 +389,25 @@ export const createInfluencer = async (
       priceEUR: priceEUR ? parseFloat(priceEUR) : null,
       priceUSD: priceUSD ? parseFloat(priceUSD) : null,
       status: "PING_1" as InfluencerStatus,
-      // CRITICAL FIX: Explicitly set managerId
+      // FORCE include managerId - use different approaches
       managerId: req.user.id,
     };
 
+    // Log the exact data being sent to Prisma
     console.log(
-      "📝 [PRODUCTION CREATE] Final data being sent to Prisma:",
-      influencerData
+      "📝 [PRODUCTION CREATE] Data object before Prisma:",
+      JSON.stringify(influencerData, null, 2)
     );
 
+    // Try creating with explicit data typing
     const influencer = await prisma.influencer.create({
-      data: influencerData,
-      // Include manager relation in response
+      data: {
+        ...influencerData,
+
+        manager: {
+          connect: { id: req.user.id },
+        },
+      },
       include: {
         manager: {
           select: { id: true, name: true, email: true },

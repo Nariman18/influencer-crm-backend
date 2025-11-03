@@ -397,29 +397,37 @@ export const createInfluencer = async (
 
     console.log("👤 [BACKEND] Setting managerId:", req.user.id);
 
+    // FIX: Create a complete data object with ALL fields
+    const influencerData = {
+      name,
+      email: email || null, // Explicitly set to null if empty
+      instagramHandle: instagramHandle || null,
+      followers: followers ? parseInt(followers) : null,
+      country: country || null,
+      notes: notes || null,
+      nickname: nickname || null,
+      link: link || null,
+      contactMethod: contactMethod || null,
+      paymentMethod: paymentMethod || null,
+      managerComment: managerComment || null,
+      statistics: statistics || null,
+      storyViews: storyViews || null,
+      averageViews: averageViews || null,
+      engagementCount: engagementCount || null,
+      priceEUR: priceEUR ? parseFloat(priceEUR) : null,
+      priceUSD: priceUSD ? parseFloat(priceUSD) : null,
+      status: "PING_1" as InfluencerStatus,
+      // CRITICAL FIX: Explicitly set managerId
+      managerId: req.user.id,
+    };
+
+    console.log(
+      "📝 [PRODUCTION CREATE] Final data being sent to Prisma:",
+      influencerData
+    );
+
     const influencer = await prisma.influencer.create({
-      data: {
-        name,
-        email,
-        instagramHandle,
-        followers,
-        country,
-        notes,
-        nickname,
-        link,
-        contactMethod,
-        paymentMethod,
-        managerComment,
-        statistics,
-        storyViews,
-        averageViews,
-        engagementCount,
-        priceEUR,
-        priceUSD,
-        status: "PING_1",
-        // Set the current user as manager
-        managerId: req.user.id,
-      },
+      data: influencerData,
       // Include manager relation in response
       include: {
         manager: {
@@ -500,29 +508,32 @@ export const updateInfluencer = async (
       });
     }
 
+    // FIX: Create complete data object
+    const updateData = {
+      name,
+      email: email || null,
+      instagramHandle: instagramHandle || null,
+      followers: followers ? parseInt(followers) : null,
+      country: country || null,
+      status,
+      notes: notes || null,
+      lastContactDate,
+      nickname: nickname || null,
+      link: link || null,
+      contactMethod: contactMethod || null,
+      paymentMethod: paymentMethod || null,
+      managerComment: managerComment || null,
+      statistics: statistics || null,
+      storyViews: storyViews || null,
+      averageViews: averageViews || null,
+      engagementCount: engagementCount || null,
+      priceEUR: priceEUR ? parseFloat(priceEUR) : null,
+      priceUSD: priceUSD ? parseFloat(priceUSD) : null,
+    };
+
     const influencer = await prisma.influencer.update({
       where: { id },
-      data: {
-        name,
-        email,
-        instagramHandle,
-        followers,
-        country,
-        status,
-        notes,
-        lastContactDate,
-        nickname,
-        link,
-        contactMethod,
-        paymentMethod,
-        managerComment,
-        statistics,
-        storyViews,
-        averageViews,
-        engagementCount,
-        priceEUR,
-        priceUSD,
-      },
+      data: updateData,
       include: {
         manager: {
           select: { id: true, name: true, email: true },

@@ -644,3 +644,51 @@ export const checkDuplicates = async (
     throw new AppError("Failed to check duplicates", 500);
   }
 };
+
+// Add this to your influencer controller or auth controller
+export const testProductionAuth = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
+  try {
+    console.log("🔍 [PRODUCTION TEST] Testing production authentication:", {
+      hasUser: !!req.user,
+      user: req.user,
+      environment: process.env.NODE_ENV,
+      timestamp: new Date().toISOString(),
+    });
+
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        error: "Not authenticated in production",
+        environment: process.env.NODE_ENV,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Test database connection and user lookup
+    const dbUser = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { id: true, name: true, email: true, role: true },
+    });
+
+    res.json({
+      success: true,
+      message: "Production authentication working correctly",
+      authUser: req.user,
+      dbUser: dbUser,
+      environment: process.env.NODE_ENV,
+      timestamp: new Date().toISOString(),
+      userMatch: dbUser?.id === req.user.id,
+    });
+  } catch (error) {
+    console.error("❌ [PRODUCTION TEST] Error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Production test failed",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};

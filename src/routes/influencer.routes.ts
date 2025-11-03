@@ -2,6 +2,7 @@ import { Router } from "express";
 import * as influencerController from "../controllers/influencer.controller";
 import { authenticate } from "../middleware/auth";
 import { auditLog } from "../middleware/auditLog";
+import { testProductionAuth } from "../controllers/influencer.controller";
 
 const router = Router();
 
@@ -35,5 +36,6 @@ router.post(
   influencerController.importInfluencers
 );
 router.post("/check-duplicates", influencerController.checkDuplicates);
+router.get("/test-production-auth", authenticate, testProductionAuth);
 
 export default router;

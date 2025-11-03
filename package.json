@@ -20,6 +20,9 @@
   "description": "Backend API for Influencer CRM",
   "dependencies": {
     "@prisma/client": "^6.18.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.10.0",
     "@types/xlsx": "^0.0.35",
     "bcryptjs": "^3.0.2",
@@ -38,10 +41,7 @@
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.4",
     "@types/ioredis": "^4.28.10",
-    "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.0.0",
     "@types/nodemailer": "^7.0.3",
     "nodemon": "^3.1.10",

@@ -1,20 +1,12 @@
-import { PrismaClient, InfluencerStatus } from "@prisma/client";
-import * as XLSX from "xlsx";
-import { join } from "path";
-import { cwd } from "process";
+const { PrismaClient, InfluencerStatus } = require("@prisma/client");
+const XLSX = require("xlsx");
+const path = require("path");
 
 const prisma = new PrismaClient();
 
-interface ExcelRow {
-  A: string; // nickname
-  B: string; // link
-  C: string; // email
-  D: string; // Melik (ignored)
-}
-
 async function importExcelData() {
   try {
-    const filePath = join(cwd(), "Melik.xlsx");
+    const filePath = path.join(process.cwd(), "Melik.xlsx");
     console.log("Reading Excel file from:", filePath);
 
     const workbook = XLSX.readFile(filePath);
@@ -24,16 +16,26 @@ async function importExcelData() {
       throw new Error("Ping sheet not found");
     }
 
-    // Convert to JSON with proper typing
-    const jsonData: ExcelRow[] = XLSX.utils.sheet_to_json(pingSheet, {
+    const jsonData = XLSX.utils.sheet_to_json(pingSheet, {
       header: ["A", "B", "C", "D"],
     });
 
     console.log(`Found ${jsonData.length} rows in Excel`);
 
-    // Skip header rows (first 2 rows)
+    // Find manager by email or name
+    const managerEmail = "melik@example.com"; // Change to actual manager email
+    const manager = await prisma.user.findUnique({
+      where: { email: managerEmail },
+    });
+
+    if (!manager) {
+      throw new Error(`Manager with email ${managerEmail} not found`);
+    }
+
     const dataRows = jsonData.slice(2);
-    console.log(`Processing ${dataRows.length} data rows`);
+    console.log(
+      `Processing ${dataRows.length} data rows for manager: ${manager.name}`
+    );
 
     let successCount = 0;
     let errorCount = 0;
@@ -50,53 +52,42 @@ async function importExcelData() {
         const link = String(row.B).trim();
         const rawEmail = String(row.C || "").trim();
 
-        // Process email and notes
         const { email, notes } = processEmailAndNotes(rawEmail);
+        const instagramHandle = extractInstagramHandle(link);
 
-        // Check if influencer exists first
         const existingInfluencer = await prisma.influencer.findFirst({
           where: {
-            OR: [{ instagramHandle: link }, { nickname }, { link }],
+            OR: [{ instagramHandle }, { link }, { name: nickname }],
           },
         });
 
         if (existingInfluencer) {
-          // Update existing influencer
           await prisma.influencer.update({
             where: { id: existingInfluencer.id },
             data: {
-              name: nickname, // Use nickname as Name
-              nickname,
+              name: nickname,
               link,
-              email, // Only valid emails (or null)
-              instagramHandle: link, // Use the FULL Instagram URL here
-              notes: combineNotes(existingInfluencer.notes, notes), // DM, phones, etc.
+              email,
+              instagramHandle,
+              notes: combineNotes(existingInfluencer.notes, notes),
+              managerId: manager.id, // Assign to manager
               updatedAt: new Date(),
             },
           });
-          console.log(
-            `✓ Updated: ${nickname} | Email: ${email || "No email"} | Notes: ${
-              notes || "No notes"
-            }`
-          );
+          console.log(`✓ Updated for ${manager.name}: ${nickname}`);
         } else {
-          // Create new influencer
           await prisma.influencer.create({
             data: {
-              name: nickname, // Use nickname as Name
-              nickname,
-              email, // Only valid emails (or null)
-              instagramHandle: link, // Use the FULL Instagram URL here
+              name: nickname,
+              email,
+              instagramHandle,
               link,
-              notes, // DM, phones, other contact info
+              notes,
               status: InfluencerStatus.PING_1,
+              managerId: manager.id, // Assign to manager
             },
           });
-          console.log(
-            `✓ Created: ${nickname} | Email: ${email || "No email"} | Notes: ${
-              notes || "No notes"
-            }`
-          );
+          console.log(`✓ Created for ${manager.name}: ${nickname}`);
         }
 
         successCount++;
@@ -107,6 +98,7 @@ async function importExcelData() {
     }
 
     console.log("\n=== Import Summary ===");
+    console.log(`Manager: ${manager.name}`);
     console.log(`Successful: ${successCount}`);
     console.log(`Errors: ${errorCount}`);
     console.log(`Total processed: ${dataRows.length}`);
@@ -117,69 +109,51 @@ async function importExcelData() {
   }
 }
 
-function processEmailAndNotes(rawEmail: string): {
-  email: string | null;
-  notes: string | null;
-} {
-  const trimmedEmail = rawEmail.trim();
-
-  // If empty or DM, put in notes
-  if (!trimmedEmail || trimmedEmail.toLowerCase() === "dm") {
-    return {
-      email: null,
-      notes: "Contact via Instagram DM",
-    };
+// Helper functions
+function extractInstagramHandle(link) {
+  try {
+    const url = new URL(link);
+    const pathParts = url.pathname
+      .split("/")
+      .filter((part) => part.trim() !== "");
+    if (pathParts.length > 0) return pathParts[0];
+    return link;
+  } catch (error) {
+    const match = link.match(/(?:instagram\.com\/|@)([a-zA-Z0-9._]+)/);
+    return match && match[1] ? match[1] : link;
   }
-
-  // If it's a phone number (starts with = or +), add to notes
-  if (trimmedEmail.startsWith("=") || trimmedEmail.startsWith("+")) {
-    const cleanPhone = trimmedEmail.replace(/^=+/, "").trim();
-    return {
-      email: null,
-      notes: `Phone: ${cleanPhone}`,
-    };
-  }
-
-  // If it looks like a valid email, use it as email
-  if (isValidEmail(trimmedEmail)) {
-    return {
-      email: trimmedEmail,
-      notes: null,
-    };
-  }
-
-  // For any other case that's not a valid email, put in notes
-  return {
-    email: null,
-    notes: `Contact info: ${trimmedEmail}`,
-  };
 }
 
-function isValidEmail(email: string): boolean {
+function processEmailAndNotes(rawEmail) {
+  const trimmedEmail = rawEmail.trim();
+  if (!trimmedEmail || trimmedEmail.toLowerCase() === "dm") {
+    return { email: null, notes: "Contact via Instagram DM" };
+  }
+  if (trimmedEmail.startsWith("=") || trimmedEmail.startsWith("+")) {
+    const cleanPhone = trimmedEmail.replace(/^=+/, "").trim();
+    return { email: null, notes: `Phone: ${cleanPhone}` };
+  }
+  if (isValidEmail(trimmedEmail)) {
+    return { email: trimmedEmail, notes: null };
+  }
+  return { email: null, notes: `Contact info: ${trimmedEmail}` };
+}
+
+function isValidEmail(email) {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 }
 
-function combineNotes(
-  existingNotes: string | null,
-  newNotes: string | null
-): string | null {
+function combineNotes(existingNotes, newNotes) {
   if (!newNotes) return existingNotes;
   if (!existingNotes) return newNotes;
-
-  // Combine notes, avoiding duplicates
   const existingLines = existingNotes.split("\n").map((line) => line.trim());
   const newLines = newNotes.split("\n").map((line) => line.trim());
-
   const combinedLines = [...existingLines];
   for (const line of newLines) {
-    if (!combinedLines.includes(line)) {
-      combinedLines.push(line);
-    }
+    if (!combinedLines.includes(line)) combinedLines.push(line);
   }
-
   return combinedLines.join("\n");
 }
 
-// Run the import
 importExcelData();

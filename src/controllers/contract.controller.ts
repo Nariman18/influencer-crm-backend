@@ -107,6 +107,16 @@ export const createContract = async (
       endDate,
       deliverables,
       terms,
+      // New contract fields from Ready Influencers
+      nickname,
+      link,
+      contactMethod,
+      paymentMethod,
+      managerComment,
+      statistics,
+      storyViews,
+      averageViews,
+      engagementCount,
     } = req.body;
 
     // Validate required fields
@@ -124,6 +134,16 @@ export const createContract = async (
       deliverables?: string;
       terms?: string;
       status: "DRAFT";
+      // New contract fields
+      nickname?: string;
+      link?: string;
+      contactMethod?: string;
+      paymentMethod?: string;
+      managerComment?: string;
+      statistics?: string;
+      storyViews?: string;
+      averageViews?: string;
+      engagementCount?: string;
     } = {
       influencerId,
       status: "DRAFT",
@@ -137,6 +157,17 @@ export const createContract = async (
     if (endDate) contractData.endDate = new Date(endDate);
     if (deliverables) contractData.deliverables = deliverables;
     if (terms) contractData.terms = terms;
+
+    // New contract fields
+    if (nickname) contractData.nickname = nickname;
+    if (link) contractData.link = link;
+    if (contactMethod) contractData.contactMethod = contactMethod;
+    if (paymentMethod) contractData.paymentMethod = paymentMethod;
+    if (managerComment) contractData.managerComment = managerComment;
+    if (statistics) contractData.statistics = statistics;
+    if (storyViews) contractData.storyViews = storyViews;
+    if (averageViews) contractData.averageViews = averageViews;
+    if (engagementCount) contractData.engagementCount = engagementCount;
 
     const contract = await prisma.contract.create({
       data: contractData,
@@ -174,6 +205,16 @@ export const updateContract = async (
       deliverables,
       terms,
       contractFileUrl,
+      // New contract fields
+      nickname,
+      link,
+      contactMethod,
+      paymentMethod,
+      managerComment,
+      statistics,
+      storyViews,
+      averageViews,
+      engagementCount,
     } = req.body;
 
     if (!id) {
@@ -190,6 +231,16 @@ export const updateContract = async (
       terms?: string;
       contractFileUrl?: string;
       signedAt?: Date;
+      // New contract fields
+      nickname?: string;
+      link?: string;
+      contactMethod?: string;
+      paymentMethod?: string;
+      managerComment?: string;
+      statistics?: string;
+      storyViews?: string;
+      averageViews?: string;
+      engagementCount?: string;
     } = {};
 
     // Only add fields that are provided
@@ -202,6 +253,19 @@ export const updateContract = async (
     if (startDate) updateData.startDate = new Date(startDate);
     if (endDate) updateData.endDate = new Date(endDate);
     if (status === "SIGNED") updateData.signedAt = new Date();
+
+    // New contract fields
+    if (nickname !== undefined) updateData.nickname = nickname;
+    if (link !== undefined) updateData.link = link;
+    if (contactMethod !== undefined) updateData.contactMethod = contactMethod;
+    if (paymentMethod !== undefined) updateData.paymentMethod = paymentMethod;
+    if (managerComment !== undefined)
+      updateData.managerComment = managerComment;
+    if (statistics !== undefined) updateData.statistics = statistics;
+    if (storyViews !== undefined) updateData.storyViews = storyViews;
+    if (averageViews !== undefined) updateData.averageViews = averageViews;
+    if (engagementCount !== undefined)
+      updateData.engagementCount = engagementCount;
 
     const contract = await prisma.contract.update({
       where: { id },

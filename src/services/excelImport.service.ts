@@ -1,27 +1,30 @@
 import * as XLSX from "xlsx";
 import { PrismaClient, InfluencerStatus } from "@prisma/client";
-import { join } from "path";
-import { cwd } from "process";
 
 const prisma = new PrismaClient();
 
 interface ProcessedInfluencer {
-  name: string; // Nickname from Excel
-  nickname?: string; // Original nickname from Excel
-  email?: string; // Only valid email addresses
-  instagramHandle?: string; // FULL Instagram URL
-  link?: string; // Full Instagram URL
-  notes?: string; // DM info, phone numbers, other contact info
+  name: string;
+  email?: string | null;
+  instagramHandle?: string | null;
+  link?: string | null;
+  notes?: string | null;
   status: InfluencerStatus;
+  managerId?: string | null;
+}
+
+interface ImportResult {
+  success: number;
+  errors: string[];
 }
 
 export class ExcelImportService {
   static async importInfluencersFromExcel(
     filePath: string,
+    managerId?: string,
     sheetName: string = "Ping"
-  ): Promise<{ success: number; errors: string[] }> {
+  ): Promise<ImportResult> {
     try {
-      // Read Excel file
       const workbook = XLSX.readFile(filePath);
       const sheet = workbook.Sheets[sheetName];
 
@@ -29,21 +32,19 @@ export class ExcelImportService {
         throw new Error(`${sheetName} sheet not found in Excel file`);
       }
 
-      // Convert sheet to JSON
       const jsonData: any[] = XLSX.utils.sheet_to_json(sheet, {
         header: ["A", "B", "C", "D"],
       });
 
-      // Process data - skip header rows
       const influencers: ProcessedInfluencer[] = [];
       const errors: string[] = [];
 
       for (let i = 2; i < jsonData.length; i++) {
         const row = jsonData[i];
         try {
-          if (!row.A || !row.B) continue; // Skip rows without nickname or link
+          if (!row.A || !row.B) continue;
 
-          const influencer = this.processRow(row);
+          const influencer = this.processRow(row, managerId);
           if (influencer) {
             influencers.push(influencer);
           }
@@ -56,7 +57,6 @@ export class ExcelImportService {
         }
       }
 
-      // Import to database
       let successCount = 0;
       for (const influencer of influencers) {
         try {
@@ -82,92 +82,118 @@ export class ExcelImportService {
   }
 
   private static async upsertInfluencer(influencer: ProcessedInfluencer) {
-    // Find existing influencer
     const existingInfluencer = await prisma.influencer.findFirst({
       where: {
         OR: [
           { instagramHandle: influencer.instagramHandle },
-          { nickname: influencer.nickname },
+          { name: influencer.name },
           { link: influencer.link },
         ],
       },
     });
 
+    const cleanData = {
+      name: influencer.name,
+      status: influencer.status,
+      email: influencer.email ?? null,
+      instagramHandle: influencer.instagramHandle ?? null,
+      link: influencer.link ?? null,
+      notes: this.combineNotes(
+        existingInfluencer?.notes || null,
+        influencer.notes ?? null
+      ),
+      managerId: influencer.managerId ?? null,
+      updatedAt: new Date(),
+    };
+
     if (existingInfluencer) {
-      // Update existing influencer
       return await prisma.influencer.update({
         where: { id: existingInfluencer.id },
-        data: {
-          ...influencer,
-          notes: this.combineNotes(existingInfluencer.notes, influencer.notes),
-          updatedAt: new Date(),
-        },
+        data: cleanData,
       });
     } else {
-      // Create new influencer
       return await prisma.influencer.create({
-        data: influencer,
+        data: cleanData,
       });
     }
   }
 
-  private static processRow(row: any): ProcessedInfluencer | null {
-    const nickname = String(row.A || "").trim();
+  private static processRow(
+    row: any,
+    managerId?: string
+  ): ProcessedInfluencer | null {
+    const name = String(row.A || "").trim();
     const link = String(row.B || "").trim();
     const rawEmail = String(row.C || "").trim();
 
-    if (!nickname || !link) {
+    if (!name || !link) {
       return null;
     }
 
-    // Process email and notes - this will separate emails vs other contact info
     const { email, notes } = this.processEmailAndNotes(rawEmail);
+    const instagramHandle = this.extractInstagramHandle(link);
 
     return {
-      name: nickname, // Use Excel nickname as the main Name field
-      nickname, // Keep original nickname
-      email, // Only valid email addresses (or undefined)
-      instagramHandle: link, // Use the FULL Instagram URL here
-      link, // Also keep the full URL in link field
-      notes, // DM info, phone numbers, other contact info
+      name,
+      email: email ?? null,
+      instagramHandle,
+      link,
+      notes: notes ?? null,
+      managerId: managerId ?? null,
       status: InfluencerStatus.PING_1,
     };
   }
 
+  private static extractInstagramHandle(link: string): string {
+    try {
+      const url = new URL(link);
+      const pathParts = url.pathname
+        .split("/")
+        .filter((part) => part.trim() !== "");
+
+      if (pathParts.length > 0) {
+        return pathParts[0];
+      }
+      return link;
+    } catch (error) {
+      const match = link.match(/(?:instagram\.com\/|@)([a-zA-Z0-9._]+)/);
+      if (match && match[1]) {
+        return match[1];
+      }
+      return link;
+    }
+  }
+
   private static processEmailAndNotes(rawEmail: string): {
-    email: string | undefined;
-    notes: string | undefined;
+    email: string | null;
+    notes: string | null;
   } {
     const trimmedEmail = rawEmail.trim();
 
-    // If empty or DM, put in notes
     if (!trimmedEmail || trimmedEmail.toLowerCase() === "dm") {
       return {
-        email: undefined,
+        email: null,
         notes: "Contact via Instagram DM",
       };
     }
 
-    // If it's a phone number (starts with = or +), add to notes
     if (trimmedEmail.startsWith("=") || trimmedEmail.startsWith("+")) {
       const cleanPhone = trimmedEmail.replace(/^=+/, "").trim();
       return {
-        email: undefined,
+        email: null,
         notes: `Phone: ${cleanPhone}`,
       };
     }
 
-    // If it looks like a valid email, use it as email
     if (this.isValidEmail(trimmedEmail)) {
       return {
         email: trimmedEmail,
-        notes: undefined,
+        notes: null,
       };
     }
 
-    // For any other case that's not a valid email, put in notes
     return {
-      email: undefined,
+      email: null,
       notes: `Contact info: ${trimmedEmail}`,
     };
   }
@@ -179,9 +205,9 @@ export class ExcelImportService {
 
   private static combineNotes(
     existingNotes: string | null,
-    newNotes: string | undefined
-  ): string | undefined {
-    if (!newNotes) return existingNotes || undefined;
+    newNotes: string | null
+  ): string | null {
+    if (!newNotes) return existingNotes;
     if (!existingNotes) return newNotes;
 
     const existingLines = existingNotes.split("\n").map((line) => line.trim());

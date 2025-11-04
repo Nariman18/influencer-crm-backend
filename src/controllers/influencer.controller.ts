@@ -5,7 +5,6 @@ import { AppError } from "../middleware/errorHandler";
 import { InfluencerStatus } from "@prisma/client";
 
 // Helper function to check for duplicates
-// Helper function to check for duplicates
 const checkForDuplicates = async (
   email?: string,
   instagramHandle?: string,
@@ -137,7 +136,7 @@ export const getInfluencers = async (
         { name: { contains: search, mode: "insensitive" } },
         { email: { contains: search, mode: "insensitive" } },
         { instagramHandle: { contains: search, mode: "insensitive" } },
-        { nickname: { contains: search, mode: "insensitive" } },
+        // Removed nickname from search since it's no longer in Influencer model
       ];
     }
 
@@ -265,33 +264,8 @@ export const createInfluencer = async (
       return;
     }
 
-    const {
-      name,
-      email,
-      instagramHandle,
-      followers,
-      country,
-      notes,
-      nickname,
-      link,
-      contactMethod,
-      paymentMethod,
-      managerComment,
-      statistics,
-      storyViews,
-      averageViews,
-      engagementCount,
-      priceEUR,
-      priceUSD,
-    } = req.body;
-
-    console.log("🔍 [BACKEND] createInfluencer called with:", {
-      name,
-      email,
-      instagramHandle,
-      managerId: req.user?.id,
-      user: req.user,
-    });
+    const { name, email, instagramHandle, followers, country, notes, link } =
+      req.body;
 
     // Enhanced duplicate validation
     const duplicate = await checkForDuplicates(email, instagramHandle);
@@ -308,31 +282,16 @@ export const createInfluencer = async (
       throw new AppError("User not authenticated", 401);
     }
 
-    console.log(
-      "👤 [BACKEND] Setting manager via relation connection:",
-      req.user.id
-    );
-
-    // CRITICAL FIX: Use ONLY the relation connection, NOT managerId
+    // FIXED: Only include fields that exist in the Influencer model
     const influencer = await prisma.influencer.create({
       data: {
         name,
         email: email || null,
         instagramHandle: instagramHandle || null,
+        link: link || null,
         followers: followers ? parseInt(followers) : null,
         country: country || null,
         notes: notes || null,
-        nickname: nickname || null,
-        link: link || null,
-        contactMethod: contactMethod || null,
-        paymentMethod: paymentMethod || null,
-        managerComment: managerComment || null,
-        statistics: statistics || null,
-        storyViews: storyViews || null,
-        averageViews: averageViews || null,
-        engagementCount: engagementCount || null,
-        priceEUR: priceEUR ? parseFloat(priceEUR) : null,
-        priceUSD: priceUSD ? parseFloat(priceUSD) : null,
         status: "PING_1" as InfluencerStatus,
 
         manager: {
@@ -344,16 +303,6 @@ export const createInfluencer = async (
           select: { id: true, name: true, email: true },
         },
       },
-    });
-
-    console.log("[PRODUCTION CREATE] SUCCESS - Influencer created!");
-    console.log("[PRODUCTION CREATE] Final result:", {
-      id: influencer.id,
-      name: influencer.name,
-      managerId: influencer.managerId,
-      manager: influencer.manager,
-      hasManager: !!influencer.manager,
-      managerName: influencer.manager?.name || "NO MANAGER",
     });
 
     res.status(201).json(influencer);
@@ -374,22 +323,12 @@ export const updateInfluencer = async (
       name,
       email,
       instagramHandle,
+      link,
       followers,
       country,
       status,
       notes,
       lastContactDate,
-      nickname,
-      link,
-      contactMethod,
-      paymentMethod,
-      managerComment,
-      statistics,
-      storyViews,
-      averageViews,
-      engagementCount,
-      priceEUR,
-      priceUSD,
     } = req.body;
 
     // Check for duplicates when updating (exclude current influencer)
@@ -418,27 +357,17 @@ export const updateInfluencer = async (
       });
     }
 
-    // FIX: Create complete data object
+    // FIXED: Only include fields that exist in the Influencer model
     const updateData = {
       name,
       email: email || null,
       instagramHandle: instagramHandle || null,
+      link: link || null,
       followers: followers ? parseInt(followers) : null,
       country: country || null,
       status,
       notes: notes || null,
       lastContactDate,
-      nickname: nickname || null,
-      link: link || null,
-      contactMethod: contactMethod || null,
-      paymentMethod: paymentMethod || null,
-      managerComment: managerComment || null,
-      statistics: statistics || null,
-      storyViews: storyViews || null,
-      averageViews: averageViews || null,
-      engagementCount: engagementCount || null,
-      priceEUR: priceEUR ? parseFloat(priceEUR) : null,
-      priceUSD: priceUSD ? parseFloat(priceUSD) : null,
     };
 
     const influencer = await prisma.influencer.update({
@@ -621,25 +550,16 @@ export const importInfluencers = async (
           continue;
         }
 
+        // FIXED: Only include fields that exist in the Influencer model
         await prisma.influencer.create({
           data: {
             name: data.name,
             email: data.email,
             instagramHandle: data.instagramHandle,
+            link: data.link,
             followers: data.followers,
             country: data.country,
             notes: data.notes,
-            nickname: data.nickname,
-            link: data.link,
-            contactMethod: data.contactMethod,
-            paymentMethod: data.paymentMethod,
-            managerComment: data.managerComment,
-            statistics: data.statistics,
-            storyViews: data.storyViews,
-            averageViews: data.averageViews,
-            engagementCount: data.engagementCount,
-            priceEUR: data.priceEUR,
-            priceUSD: data.priceUSD,
             status: "PING_1",
             // Set the current user as manager for imported influencers
             managerId: req.user?.id,

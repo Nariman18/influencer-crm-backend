@@ -9,7 +9,7 @@ const bullmq_1 = require("bullmq");
 const ioredis_1 = __importDefault(require("ioredis"));
 const email_controller_1 = require("../controllers/email.controller");
 const prisma_1 = __importDefault(require("../config/prisma"));
-const client_1 = require("@prisma/client");
+const client_1 = require("@prisma/client"); // Import the actual enums
 class RedisQueueService {
     constructor() {
         this.connection = null;
@@ -22,13 +22,13 @@ class RedisQueueService {
         try {
             const redisUrl = process.env.REDIS_URL;
             if (!redisUrl) {
-                console.error("REDIS_URL is not defined in environment variables");
+                console.error("❌ REDIS_URL is not defined in environment variables");
                 this.initializeFallback();
                 return;
             }
             // Mask password for logging
             const maskedUrl = redisUrl.replace(/:([^:]+)@/, ":****@");
-            console.log(`Attempting to connect to Redis: ${maskedUrl}`);
+            console.log(`🔗 Attempting to connect to Redis: ${maskedUrl}`);
             const isRedisCloud = redisUrl.includes("redislabs.com") ||
                 redisUrl.includes("redis-cloud.com") ||
                 redisUrl.includes("redns.redis-cloud.com");
@@ -36,12 +36,12 @@ class RedisQueueService {
             await this.tryRedisConnection(redisUrl, isRedisCloud);
         }
         catch (error) {
-            console.error("Failed to initialize Redis queue:", error);
+            console.error("❌ Failed to initialize Redis queue:", error);
             this.initializeFallback();
         }
     }
     async tryRedisConnection(redisUrl, isRedisCloud) {
-        console.log("Trying simple Redis connection...");
+        console.log("🔄 Trying simple Redis connection...");
         try {
             // Use optimized Redis options for Redis Cloud
             const connection = new ioredis_1.default(redisUrl, {
@@ -57,10 +57,10 @@ class RedisQueueService {
             });
             // Test with ping
             const result = await connection.ping();
-            console.log("Redis ping response:", result);
+            console.log("✅ Redis ping response:", result);
             this.connection = connection;
             this.isConnected = true;
-            console.log("Redis connected successfully");
+            console.log("✅ Redis connected successfully");
             this.setupConnectionEvents();
             this.initializeQueueAndWorker();
             return;
@@ -78,11 +78,11 @@ class RedisQueueService {
             this.isConnected = false;
         });
         this.connection.on("close", () => {
-            console.log("Redis connection closed");
+            console.log("🔌 Redis connection closed");
             this.isConnected = false;
         });
         this.connection.on("end", () => {
-            console.log("Redis connection ended");
+            console.log("🔌 Redis connection ended");
             this.isConnected = false;
         });
     }
@@ -106,16 +106,16 @@ class RedisQueueService {
             });
             this.worker = this.setupWorker();
             this.setupEventListeners();
-            console.log("Redis queue and worker initialized successfully");
+            console.log("✅ Redis queue and worker initialized successfully");
         }
         catch (error) {
-            console.error("Failed to initialize queue and worker:", error);
+            console.error("❌ Failed to initialize queue and worker:", error);
             this.initializeFallback();
         }
     }
     initializeFallback() {
-        console.warn("Initializing Redis queue in FALLBACK MODE...");
-        console.warn("All emails will be sent directly (no queueing)");
+        console.warn("🔄 Initializing Redis queue in FALLBACK MODE...");
+        console.warn("📧 All emails will be sent directly (no queueing)");
         this.isConnected = false;
         this.connection = null;
         this.emailQueue = null;
@@ -127,12 +127,12 @@ class RedisQueueService {
         }
         const worker = new bullmq_1.Worker("email", async (job) => {
             const { userId, to, subject, body, influencerName, emailRecordId, influencerId, } = job.data;
-            console.log(`Processing email job ${job.id} to ${to}`);
+            console.log(`📧 Processing email job ${job.id} to ${to}`);
             try {
-                // Use proper EmailStatus enum values
+                // FIXED: Use the actual Prisma enum value
                 await prisma_1.default.email.update({
                     where: { id: emailRecordId },
-                    data: { status: client_1.EmailStatus.PROCESSING },
+                    data: { status: client_1.EmailStatus.PROCESSING }, // Use enum directly
                 });
                 // Send the email using your existing EmailService
                 const result = await email_controller_1.EmailService.sendEmail(userId, to, subject, body, influencerName);
@@ -140,21 +140,21 @@ class RedisQueueService {
                 await prisma_1.default.email.update({
                     where: { id: emailRecordId },
                     data: {
-                        status: client_1.EmailStatus.SENT,
+                        status: client_1.EmailStatus.SENT, // Use enum directly
                         sentAt: result.sentAt,
                     },
                 });
                 // Update influencer status
                 await this.updateInfluencerStatus(influencerId);
-                console.log(`Completed email job ${job.id}`);
+                console.log(`✅ Completed email job ${job.id}`);
                 return { success: true, messageId: result.messageId };
             }
             catch (error) {
-                console.error(`Failed email job ${job.id}:`, error);
+                console.error(`❌ Failed email job ${job.id}:`, error);
                 await prisma_1.default.email.update({
                     where: { id: emailRecordId },
                     data: {
-                        status: client_1.EmailStatus.FAILED,
+                        status: client_1.EmailStatus.FAILED, // Use enum directly
                         errorMessage: error instanceof Error ? error.message : "Unknown error",
                     },
                 });
@@ -213,16 +213,16 @@ class RedisQueueService {
             const job = await this.emailQueue.add("send-email", jobData, {
                 delay: delayMs,
             });
-            // Use proper EmailStatus enum value
+            // FIXED: Use the actual Prisma enum value
             await prisma_1.default.email.update({
                 where: { id: jobData.emailRecordId },
-                data: { status: client_1.EmailStatus.QUEUED },
+                data: { status: client_1.EmailStatus.QUEUED }, // Use enum directly
             });
             console.log(`📨 Email job queued: ${job.id} for ${jobData.to}`);
             return job.id;
         }
         catch (error) {
-            console.error("Failed to queue email, falling back to direct send:", error);
+            console.error("❌ Failed to queue email, falling back to direct send:", error);
             return this.fallbackToDirectSend(jobData);
         }
     }
@@ -233,20 +233,20 @@ class RedisQueueService {
             await prisma_1.default.email.update({
                 where: { id: jobData.emailRecordId },
                 data: {
-                    status: client_1.EmailStatus.SENT,
+                    status: client_1.EmailStatus.SENT, // Use enum directly
                     sentAt: result.sentAt,
                 },
             });
             await this.updateInfluencerStatus(jobData.influencerId);
-            console.log("Email sent directly (fallback)");
+            console.log("✅ Email sent directly (fallback)");
             return `direct-${Date.now()}`;
         }
         catch (error) {
-            console.error("Direct email send failed:", error);
+            console.error("❌ Direct email send failed:", error);
             await prisma_1.default.email.update({
                 where: { id: jobData.emailRecordId },
                 data: {
-                    status: client_1.EmailStatus.FAILED,
+                    status: client_1.EmailStatus.FAILED, // Use enum directly
                     errorMessage: error instanceof Error ? error.message : "Unknown error",
                 },
             });

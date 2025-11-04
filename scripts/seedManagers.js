@@ -29,6 +29,12 @@ async function seedManagers() {
       password: "nariman18",
       role: UserRole.MANAGER,
     },
+    {
+      name: "Rostyslav",
+      email: "sofiaaatig@gmail.com",
+      password: "Sofia1990",
+      role: UserRole.MANAGER,
+    },
   ];
 
   console.log("Seeding managers...");

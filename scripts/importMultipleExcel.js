@@ -152,6 +152,10 @@ class ExcelImportService {
   static processEmailAndNotes(rawEmail) {
     const trimmedEmail = rawEmail.trim();
 
+    if (!trimmedEmail) {
+      return { email: undefined, notes: undefined };
+    }
+
     if (!trimmedEmail || trimmedEmail.toLowerCase() === "dm") {
       return { email: undefined, notes: "Contact via Instagram DM" };
     }
@@ -212,6 +216,11 @@ async function importMultipleFiles() {
       filename: "Nariman.xlsx",
       sheetName: "Ping",
       managerEmail: "nariman18@gmail.com",
+    },
+    {
+      filename: "Rostyslav.xlsx",
+      sheetName: "Ping",
+      managerEmail: "sofiaaatig@gmail.com",
     },
   ];
 

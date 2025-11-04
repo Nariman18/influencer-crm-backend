@@ -712,7 +712,6 @@ export const bulkSendEmails = async (
   }
 };
 
-// Add this function to your email.controller.ts - BEFORE the sendEmail function
 export const getEmails = async (
   req: AuthRequest,
   res: Response

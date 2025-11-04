@@ -197,26 +197,26 @@ class ExcelImportService {
 
 async function importMultipleFiles() {
   const managerFiles = [
-    {
-      filename: "Melik.xlsx",
-      sheetName: "Ping",
-      managerEmail: "melik@gmail.com",
-    },
-    {
-      filename: "Cavidan.xlsx",
-      sheetName: "Ping",
-      managerEmail: "cavidan1999@gmail.com",
-    },
-    {
-      filename: "Alik.xlsx",
-      sheetName: "Ping",
-      managerEmail: "alik@gmail.com",
-    },
-    {
-      filename: "Nariman.xlsx",
-      sheetName: "Ping",
-      managerEmail: "nariman18@gmail.com",
-    },
+    // {
+    //   filename: "Melik.xlsx",
+    //   sheetName: "Ping",
+    //   managerEmail: "melik@gmail.com",
+    // },
+    // {
+    //   filename: "Cavidan.xlsx",
+    //   sheetName: "Ping",
+    //   managerEmail: "cavidan1999@gmail.com",
+    // },
+    // {
+    //   filename: "Alik.xlsx",
+    //   sheetName: "Ping",
+    //   managerEmail: "alik@gmail.com",
+    // },
+    // {
+    //   filename: "Nariman.xlsx",
+    //   sheetName: "Ping",
+    //   managerEmail: "nariman18@gmail.com",
+    // },
     {
       filename: "Rostyslav.xlsx",
       sheetName: "Ping",

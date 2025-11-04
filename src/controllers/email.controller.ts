@@ -4,7 +4,7 @@ import { AuthRequest, PaginatedResponse } from "../types";
 import { AppError } from "../middleware/errorHandler";
 import { google } from "googleapis";
 import { EmailStatus } from "@prisma/client";
-import { redisQueue } from "../lib/redis-queue";
+import { EmailJobData, redisQueue } from "../lib/redis-queue";
 
 const OAuth2 = google.auth.OAuth2;
 
@@ -641,14 +641,10 @@ export const bulkSendEmails = async (
       throw new AppError("Email template not found", 404);
     }
 
-    const results = {
-      success: 0,
-      failed: 0,
-      errors: [] as Array<{ influencerId: string; error: string }>,
-      queued: [] as string[], // Track queued email IDs
-    };
+    // Prepare all jobs first
+    const jobsData: EmailJobData[] = [];
+    const emailRecords: any[] = [];
 
-    // Process influencers and add to queue
     for (const influencerId of influencerIds) {
       try {
         const influencer = await prisma.influencer.findUnique({
@@ -656,12 +652,7 @@ export const bulkSendEmails = async (
         });
 
         if (!influencer || !influencer.email) {
-          results.failed++;
-          results.errors.push({
-            influencerId,
-            error: "Influencer not found or has no email",
-          });
-          continue;
+          continue; // Skip influencers without email
         }
 
         const personalizedVars = {
@@ -686,35 +677,34 @@ export const bulkSendEmails = async (
           },
         });
 
-        // Add to Redis queue with staggered delay to avoid rate limits
-        const delayMs = results.success * 2000; // Stagger by 2 seconds each
-        await redisQueue.addEmailJob(
-          {
-            userId: req.user.id,
-            to: influencer.email!,
-            subject,
-            body,
-            influencerName: influencer.name,
-            emailRecordId: email.id,
-            influencerId: influencer.id,
-          },
-          delayMs
-        );
-
-        results.success++;
-        results.queued.push(email.id);
-      } catch (error) {
-        results.failed++;
-        results.errors.push({
-          influencerId,
-          error: error instanceof Error ? error.message : "Unknown error",
+        jobsData.push({
+          userId: req.user.id,
+          to: influencer.email!,
+          subject,
+          body,
+          influencerName: influencer.name,
+          emailRecordId: email.id,
+          influencerId: influencer.id,
         });
+
+        emailRecords.push(email);
+      } catch (error) {
+        console.error(
+          `Failed to prepare email for influencer ${influencerId}:`,
+          error
+        );
       }
     }
 
+    // Use bulk processing for better performance
+    const jobIds = await redisQueue.addBulkEmailJobs(jobsData);
+
     res.json({
-      ...results,
-      message: `Queued ${results.success} emails for sending`,
+      success: jobIds.length,
+      failed: influencerIds.length - jobIds.length,
+      total: influencerIds.length,
+      queued: jobIds.length,
+      message: `Queued ${jobIds.length} emails for processing`,
     });
   } catch (error) {
     if (error instanceof AppError) throw error;

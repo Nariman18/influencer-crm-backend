@@ -718,7 +718,7 @@ export const getEmails = async (
 ): Promise<void> => {
   try {
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 30;
+    const limit = parseInt(req.query.limit as string) || 50;
     const influencerId = req.query.influencerId as string | undefined;
     const status = req.query.status as EmailStatus | undefined;
 

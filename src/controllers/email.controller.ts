@@ -252,98 +252,98 @@ export class EmailService {
    */
   private static wrapEmailBody(body: string, influencerName: string): string {
     return `
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-      body { 
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-        line-height: 1.6; 
-        color: #333; 
-        max-width: 600px; 
-        margin: 0 auto; 
-        padding: 0;
-        background-color: #f9fafb;
-      }
-      .container {
-        background: white;
-        border-radius: 8px;
-        overflow: hidden;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        margin: 20px;
-      }
-      .header { 
-        background: #dc2626; 
-        color: white; 
-        padding: 24px 20px; 
-        text-align: center; 
-      }
-      .header h2 {
-        margin: 0;
-        font-size: 24px;
-        font-weight: 600;
-      }
-      .content { 
-        padding: 32px 24px; 
-        background: white;
-      }
-      .content-body {
-        font-size: 16px;
-        line-height: 1.7;
-        color: #4b5563;
-      }
-      .footer { 
-        background: #1f2937; 
-        color: white; 
-        padding: 20px; 
-        text-align: center; 
-        font-size: 12px; 
-      }
-      .signature { 
-        margin-top: 24px; 
-        padding-top: 24px; 
-        border-top: 1px solid #e5e7eb; 
-        color: #6b7280;
-      }
-      .influencer-name {
-        color: #dc2626;
-        font-weight: 600;
-      }
-      @media only screen and (max-width: 600px) {
-        body {
-          padding: 10px;
+  <!DOCTYPE html>
+  <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        body { 
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+          line-height: 1.6; 
+          color: #333; 
+          max-width: 600px; 
+          margin: 0 auto; 
+          padding: 0;
+          background-color: #f9fafb;
         }
         .container {
-          margin: 10px;
+          background: white;
+          border-radius: 8px;
+          overflow: hidden;
+          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+          margin: 20px;
         }
-        .content {
-          padding: 24px 20px;
+        .header { 
+          background: #dc2626; 
+          color: white; 
+          padding: 24px 20px; 
+          text-align: center; 
         }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="header">
-        <h2>Influencer Collaboration</h2>
-      </div>
-      <div class="content">
-        <div class="content-body">
-          ${body.replace(/\n/g, "<br>")}
+        .header h2 {
+          margin: 0;
+          font-size: 24px;
+          font-weight: 600;
+        }
+        .content { 
+          padding: 32px 24px; 
+          background: white;
+        }
+        .content-body {
+          font-size: 16px;
+          line-height: 1.7;
+          color: #4b5563;
+        }
+        .footer { 
+          background: #1f2937; 
+          color: white; 
+          padding: 20px; 
+          text-align: center; 
+          font-size: 12px; 
+        }
+        .signature { 
+          margin-top: 24px; 
+          padding-top: 24px; 
+          border-top: 1px solid #e5e7eb; 
+          color: #6b7280;
+        }
+        .influencer-name {
+          color: #dc2626;
+          font-weight: 600;
+        }
+        @media only screen and (max-width: 600px) {
+          body {
+            padding: 10px;
+          }
+          .container {
+            margin: 10px;
+          }
+          .content {
+            padding: 24px 20px;
+          }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h2>Influencer Collaboration</h2>
         </div>
-        <div class="signature">
-          <p>Best regards,<br><strong>Influencer CRM Team</strong></p>
+        <div class="content">
+          <div class="content-body">
+            ${body.replace(/\n/g, "<br>")}
+          </div>
+          <div class="signature">
+            <p>Best regards,<br><strong>Influencer CRM Team</strong></p>
+          </div>
+        </div>
+        <div class="footer">
+          <p>This email was sent to <span class="influencer-name">${influencerName}</span> via Influencer CRM Platform</p>
+          <p>© ${new Date().getFullYear()} Influencer CRM. All rights reserved.</p>
         </div>
       </div>
-      <div class="footer">
-        <p>This email was sent to <span class="influencer-name">${influencerName}</span> via Influencer CRM Platform</p>
-        <p>© ${new Date().getFullYear()} Influencer CRM. All rights reserved.</p>
-      </div>
-    </div>
-  </body>
-</html>`;
+    </body>
+  </html>`;
   }
 }
 
@@ -571,7 +571,7 @@ export const sendEmail = async (
         sentById: req.user.id,
         subject,
         body,
-        status: EmailStatus.PENDING, // Will be updated to QUEUED by the queue
+        status: EmailStatus.PENDING,
       },
     });
 

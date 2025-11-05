@@ -1,15 +1,5 @@
 import { Request } from "express";
-import { UserRole } from "@prisma/client";
-
-export enum EmailStatus {
-  PENDING = "PENDING",
-  QUEUED = "QUEUED",
-  PROCESSING = "PROCESSING",
-  SENT = "SENT",
-  FAILED = "FAILED",
-  OPENED = "OPENED",
-  REPLIED = "REPLIED",
-}
+import { UserRole, EmailStatus } from "@prisma/client";
 
 export interface AuthUser {
   id: string;
@@ -74,3 +64,6 @@ export interface ImportInfluencerData {
   country?: string;
   notes?: string;
 }
+
+// Exporting the Prisma EmailStatus for use in my backend
+export { EmailStatus };

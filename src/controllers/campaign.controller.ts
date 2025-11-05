@@ -9,7 +9,7 @@ export const getCampaigns = async (
 ): Promise<void> => {
   try {
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 20;
+    const limit = parseInt(req.query.limit as string) || 30;
     const isActive =
       req.query.isActive === "true"
         ? true

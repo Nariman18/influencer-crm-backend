@@ -2,7 +2,8 @@ import { Response } from "express";
 import prisma from "../config/prisma";
 import { AuthRequest, PaginatedResponse } from "../types";
 import { AppError } from "../middleware/errorHandler";
-import { InfluencerStatus } from "@prisma/client";
+import { EmailStatus, InfluencerStatus } from "@prisma/client";
+import redisQueue from "../lib/redis-queue";
 
 // Helper function to check for duplicates
 const checkForDuplicates = async (
@@ -170,16 +171,6 @@ export const getInfluencers = async (
       prisma.influencer.count({ where }),
     ]);
 
-    console.log("📊 [GET INFLUENCERS] Manager relationships:");
-    influencers.forEach((inf, index) => {
-      console.log(`   ${index + 1}. ${inf.name}:`, {
-        managerId: inf.managerId,
-        manager: inf.manager,
-        hasManager: !!inf.manager,
-        managerName: inf.manager?.name || "NO MANAGER",
-      });
-    });
-
     const response: PaginatedResponse<(typeof influencers)[0]> = {
       data: influencers,
       pagination: {
@@ -292,7 +283,7 @@ export const createInfluencer = async (
         followers: followers ? parseInt(followers) : null,
         country: country || null,
         notes: notes || null,
-        status: "PING_1" as InfluencerStatus,
+        status: "NOT_SENT" as InfluencerStatus,
 
         manager: {
           connect: { id: req.user.id },
@@ -390,16 +381,132 @@ export const updateInfluencer = async (
 export const deleteInfluencer = async (
   req: AuthRequest,
   res: Response
-): Promise<void> => {
-  try {
-    const { id } = req.params;
+): Promise<Response> => {
+  const { id } = req.params;
+  const force = req.query.force === "true";
 
-    await prisma.influencer.delete({
-      where: { id },
+  try {
+    if (!req.user) {
+      throw new AppError("Not authenticated", 401);
+    }
+
+    const influencer = await prisma.influencer.findUnique({ where: { id } });
+    if (!influencer) {
+      throw new AppError("Influencer not found", 404);
+    }
+
+    // fetch related emails (small projection)
+    const emails = await prisma.email.findMany({
+      where: { influencerId: id },
+      select: { id: true, status: true, scheduledJobId: true },
     });
 
-    res.json({ message: "Influencer deleted successfully" });
+    // statuses considered "active" (do not delete if any exist unless force=true)
+    const activeStatuses = new Set<string>([
+      String(EmailStatus.PENDING),
+      String(EmailStatus.QUEUED),
+      String(EmailStatus.PROCESSING),
+    ]);
+
+    const hasActive = emails.some((e) => activeStatuses.has(String(e.status)));
+
+    if (hasActive && !force) {
+      // there are active emails -> refuse deletion unless forced
+      return res.status(409).json({
+        success: false,
+        message:
+          "Influencer has active/queued email(s). To delete anyway pass ?force=true (admin action).",
+        activeEmailCount: emails.filter((e) =>
+          activeStatuses.has(String(e.status))
+        ).length,
+      });
+    }
+
+    // If no active emails -> safe-delete: remove email records and influencer
+    if (!hasActive) {
+      // best-effort: remove scheduled jobs for these emails (if any)
+      for (const e of emails) {
+        const jid = e.scheduledJobId;
+        if (jid) {
+          try {
+            if (
+              redisQueue?.followUpQueue &&
+              typeof redisQueue.followUpQueue.remove === "function"
+            ) {
+              await redisQueue.followUpQueue.remove(jid);
+            }
+            if (
+              redisQueue?.emailSendQueue &&
+              typeof redisQueue.emailSendQueue.remove === "function"
+            ) {
+              await redisQueue.emailSendQueue.remove(jid);
+            }
+          } catch (rmErr) {
+            console.warn("[deleteInfluencer] failed to remove job", jid, rmErr);
+          }
+        }
+      }
+
+      // Delete emails + influencer in transaction
+      await prisma.$transaction([
+        prisma.email.deleteMany({ where: { influencerId: id } }),
+        prisma.influencer.delete({ where: { id } }),
+      ]);
+
+      return res.json({
+        success: true,
+        message: `Influencer deleted. Removed ${emails.length} related email records.`,
+      });
+    }
+
+    // If we reach here, there were active emails and force=true was handled further down
+    if (force && emails.length > 0) {
+      // Attempt to remove scheduled jobs (best-effort)
+      for (const e of emails) {
+        const jid = e.scheduledJobId;
+        if (jid) {
+          try {
+            if (
+              redisQueue?.followUpQueue &&
+              typeof redisQueue.followUpQueue.remove === "function"
+            ) {
+              await redisQueue.followUpQueue.remove(jid);
+            }
+            if (
+              redisQueue?.emailSendQueue &&
+              typeof redisQueue.emailSendQueue.remove === "function"
+            ) {
+              await redisQueue.emailSendQueue.remove(jid);
+            }
+          } catch (rmErr) {
+            console.warn(
+              "[deleteInfluencer|force] failed to remove job",
+              jid,
+              rmErr
+            );
+          }
+        }
+      }
+
+      await prisma.$transaction([
+        prisma.email.deleteMany({ where: { influencerId: id } }),
+        prisma.influencer.delete({ where: { id } }),
+      ]);
+
+      return res.json({
+        success: true,
+        message: `Influencer and related emails deleted (force=true). Deleted ${emails.length} emails.`,
+      });
+    }
+
+    // fallback (shouldn't happen)
+    return res.status(409).json({
+      success: false,
+      message: "Unable to delete influencer - unknown state.",
+    });
   } catch (error) {
+    console.error("Delete influencer error:", error);
+    if (error instanceof AppError) throw error;
     throw new AppError("Failed to delete influencer", 500);
   }
 };
@@ -408,24 +515,145 @@ export const deleteInfluencer = async (
 export const bulkDeleteInfluencers = async (
   req: AuthRequest,
   res: Response
-): Promise<void> => {
+): Promise<Response> => {
   try {
-    const { ids } = req.body;
+    const { ids, force = false } = req.body;
 
     if (!Array.isArray(ids) || ids.length === 0) {
       throw new AppError("Invalid influencer IDs", 400);
     }
 
-    const result = await prisma.influencer.deleteMany({
-      where: {
-        id: { in: ids },
+    // gather email metadata for all influencers
+    const emails = await prisma.email.findMany({
+      where: { influencerId: { in: ids } },
+      select: {
+        id: true,
+        influencerId: true,
+        status: true,
+        scheduledJobId: true,
       },
     });
 
-    res.json({
-      message: `Deleted ${result.count} influencers`,
-      count: result.count,
-    });
+    const activeStatuses = new Set<string>([
+      String(EmailStatus.PENDING),
+      String(EmailStatus.QUEUED),
+      String(EmailStatus.PROCESSING),
+    ]);
+
+    // track which influencerIds have active emails
+    const influencersWithActive = new Set<string>();
+    for (const e of emails) {
+      if (activeStatuses.has(String(e.status))) {
+        influencersWithActive.add(e.influencerId);
+      }
+    }
+
+    if (influencersWithActive.size > 0 && !force) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "One or more influencers have active/queued email(s). To delete them anyway pass { force: true } in body (admin action).",
+        activeInfluencerCount: influencersWithActive.size,
+        activeInfluencerIds: Array.from(influencersWithActive),
+      });
+    }
+
+    // For influencers that have NO active emails -> we will delete emails + influencer
+    // For force=true we delete all requested influencers (best-effort removing scheduled jobs)
+    if (!force) {
+      // compute deletable influencer ids: those without active emails
+      const influencerIdsWithEmails = new Set(
+        emails.map((e) => e.influencerId)
+      );
+      const deletableIds = ids.filter((i) => !influencersWithActive.has(i));
+
+      // remove scheduled jobs for deletable influencers (best-effort)
+      for (const e of emails.filter((x) =>
+        deletableIds.includes(x.influencerId)
+      )) {
+        const jid = e.scheduledJobId;
+        if (jid) {
+          try {
+            if (
+              redisQueue?.followUpQueue &&
+              typeof redisQueue.followUpQueue.remove === "function"
+            ) {
+              await redisQueue.followUpQueue.remove(jid);
+            }
+            if (
+              redisQueue?.emailSendQueue &&
+              typeof redisQueue.emailSendQueue.remove === "function"
+            ) {
+              await redisQueue.emailSendQueue.remove(jid);
+            }
+          } catch (rmErr) {
+            console.warn(
+              "[bulkDeleteInfluencers] failed to remove job",
+              jid,
+              rmErr
+            );
+          }
+        }
+      }
+
+      // delete emails and influencers for deletableIds
+      if (deletableIds.length > 0) {
+        await prisma.$transaction([
+          prisma.email.deleteMany({
+            where: { influencerId: { in: deletableIds } },
+          }),
+          prisma.influencer.deleteMany({ where: { id: { in: deletableIds } } }),
+        ]);
+      }
+
+      return res.json({
+        success: true,
+        message: `Deleted ${
+          deletableIds.length
+        } influencers (those without active emails). ${
+          ids.length - deletableIds.length
+        } skipped.`,
+        deletedCount: deletableIds.length,
+        skipped: ids.length - deletableIds.length,
+      });
+    } else {
+      // force=true => remove scheduled jobs for all emails then delete everything
+      for (const e of emails) {
+        const jid = e.scheduledJobId;
+        if (jid) {
+          try {
+            if (
+              redisQueue?.followUpQueue &&
+              typeof redisQueue.followUpQueue.remove === "function"
+            ) {
+              await redisQueue.followUpQueue.remove(jid);
+            }
+            if (
+              redisQueue?.emailSendQueue &&
+              typeof redisQueue.emailSendQueue.remove === "function"
+            ) {
+              await redisQueue.emailSendQueue.remove(jid);
+            }
+          } catch (rmErr) {
+            console.warn(
+              "[bulkDeleteInfluencers|force] failed to remove job",
+              jid,
+              rmErr
+            );
+          }
+        }
+      }
+
+      await prisma.$transaction([
+        prisma.email.deleteMany({ where: { influencerId: { in: ids } } }),
+        prisma.influencer.deleteMany({ where: { id: { in: ids } } }),
+      ]);
+
+      return res.json({
+        success: true,
+        message: `Deleted ${ids.length} influencers and ${emails.length} related emails.`,
+      });
+    }
   } catch (error) {
     if (error instanceof AppError) throw error;
     throw new AppError("Failed to bulk delete influencers", 500);
@@ -560,7 +788,7 @@ export const importInfluencers = async (
             followers: data.followers,
             country: data.country,
             notes: data.notes,
-            status: "PING_1",
+            status: "NOT_SENT" as InfluencerStatus,
             // Set the current user as manager for imported influencers
             managerId: req.user?.id,
           },
@@ -610,5 +838,126 @@ export const checkDuplicates = async (
     }
   } catch (error) {
     throw new AppError("Failed to check duplicates", 500);
+  }
+};
+
+//
+// STOP AUTOMATION MANUALLY
+//
+export const stopAutomation = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id: influencerId } = req.params;
+
+    const influencer = await prisma.influencer.findUnique({
+      where: { id: influencerId },
+      select: {
+        id: true,
+        notes: true,
+        emails: {
+          select: {
+            id: true,
+            scheduledJobId: true,
+            status: true,
+            isAutomation: true,
+          },
+        },
+      },
+    });
+
+    if (!influencer) {
+      throw new AppError("Influencer not found", 404);
+    }
+
+    // collect scheduled job ids (dedupe)
+    const jobIds = Array.from(
+      new Set(
+        (influencer.emails || []).map((e) => e.scheduledJobId).filter(Boolean)
+      )
+    );
+
+    // best-effort: remove scheduled jobs from queues
+    for (const jid of jobIds) {
+      try {
+        if (
+          redisQueue?.followUpQueue &&
+          typeof redisQueue.followUpQueue.remove === "function"
+        ) {
+          await redisQueue.followUpQueue.remove(jid);
+        }
+      } catch (err) {
+        console.warn(
+          "[stopAutomation] failed to remove followUp job",
+          jid,
+          err
+        );
+      }
+      try {
+        if (
+          redisQueue?.emailSendQueue &&
+          typeof redisQueue.emailSendQueue.remove === "function"
+        ) {
+          await redisQueue.emailSendQueue.remove(jid);
+        }
+      } catch (err) {
+        // not fatal
+        console.warn(
+          "[stopAutomation] failed to remove emailSend job",
+          jid,
+          err
+        );
+      }
+    }
+
+    // Update email rows + influencer pipeline in a transaction
+    const now = new Date();
+    const notesAppend = `\nAutomation stopped manually by user ${
+      req.user?.id || "unknown"
+    } at ${now.toISOString()}`;
+
+    // Only update automation emails in active sending states
+    const emailUpdateWhere = {
+      influencerId,
+      isAutomation: true,
+      status: {
+        in: [EmailStatus.PENDING, EmailStatus.QUEUED, EmailStatus.PROCESSING],
+      },
+    };
+
+    // Use transaction so both updates succeed or fail together
+    const [emailsUpdated] = await prisma
+      .$transaction([
+        prisma.email.updateMany({
+          where: emailUpdateWhere,
+          data: {
+            status: EmailStatus.FAILED,
+            errorMessage: "Automation stopped manually",
+          },
+        }),
+        prisma.influencer.update({
+          where: { id: influencerId },
+          data: {
+            status: InfluencerStatus.NOT_SENT,
+            notes: (influencer.notes || "") + notesAppend,
+            lastContactDate: now,
+          },
+        }),
+      ])
+      .catch((txErr) => {
+        // If transaction fails, log and try fallback: update influencer only
+        console.error("[stopAutomation] transaction failed:", txErr);
+        return Promise.reject(txErr);
+      });
+
+    res.json({
+      success: true,
+      message: "Automation stopped",
+      jobsRemoved: jobIds.length,
+      emailsUpdated:
+        (emailsUpdated && (emailsUpdated.count ?? emailsUpdated)) || 0,
+    });
+  } catch (error) {
+    console.error("stopAutomation error:", error);
+    if (error instanceof AppError) throw error;
+    throw new AppError("Failed to stop automation", 500);
   }
 };

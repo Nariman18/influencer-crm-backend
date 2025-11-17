@@ -140,7 +140,8 @@ export class ExcelImportService {
       link,
       notes: notes ?? null,
       managerId: managerId ?? null,
-      status: InfluencerStatus.PING_1,
+      // Imported from Excel should default to NOT_SENT; manual sends will set PING_1
+      status: InfluencerStatus.NOT_SENT,
     };
   }
 

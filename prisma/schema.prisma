@@ -20,6 +20,7 @@ enum UserRole {
 }
 
 enum InfluencerStatus {
+  NOT_SENT
   PING_1
   PING_2
   PING_3
@@ -38,6 +39,7 @@ enum ContractStatus {
 }
 
 enum EmailStatus {
+  CANCELLED
   PENDING
   QUEUED    
   PROCESSING 
@@ -181,26 +183,35 @@ model EmailTemplate {
 }
 
 model Email {
-  id           String      @id @default(uuid())
-  influencerId String
-  templateId   String?
-  sentById     String
-  subject      String
-  body         String
-  status       EmailStatus @default(PENDING)
-  sentAt       DateTime?
-  openedAt     DateTime?
-  repliedAt    DateTime?
-  errorMessage String?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-  
-  influencer   Influencer     @relation(fields: [influencerId], references: [id], onDelete: Cascade)
-  template     EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
-  sentBy       User           @relation(fields: [sentById], references: [id], onDelete: Cascade)
-  
+  id               String         @id @default(uuid())
+  influencerId     String
+  templateId       String?
+  sentById         String
+  subject          String
+  body             String
+  status           EmailStatus
+  sentAt           DateTime?
+  openedAt         DateTime?
+  repliedAt        DateTime?
+  errorMessage     String?
+  isAutomation     Boolean        @default(false)
+  automationStepId String?
+  scheduledJobId   String?   
+  attemptCount     Int            @default(0)
+  mailgunId        String?       
+  mailgunMessageId String?       
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  influencer       Influencer     @relation(fields: [influencerId], references: [id])
+  sentBy           User           @relation(fields: [sentById], references: [id])
+  template         EmailTemplate? @relation(fields: [templateId], references: [id])
+
   @@map("emails")
 }
+
+
+
 
 model AuditLog {
   id        String   @id @default(uuid())

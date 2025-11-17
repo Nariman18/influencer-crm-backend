@@ -45,12 +45,6 @@ export const verifyToken = (token: string): AuthUser => {
 
     const decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
 
-    console.log("✅ [JWT PRODUCTION] Token verified successfully:", {
-      id: decoded.id,
-      name: decoded.name,
-      environment: process.env.NODE_ENV,
-    });
-
     return decoded;
   } catch (error) {
     console.error("❌ [JWT PRODUCTION] Token verification failed:", {

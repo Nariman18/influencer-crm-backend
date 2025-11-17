@@ -1,7 +1,9 @@
+// src/routes/influencer.routes.ts
 import { Router } from "express";
 import * as influencerController from "../controllers/influencer.controller";
 import { authenticate } from "../middleware/auth";
 import { auditLog } from "../middleware/auditLog";
+import { stopAutomation } from "../controllers/influencer.controller";
 
 const router = Router();
 
@@ -40,5 +42,7 @@ router.post(
   influencerController.importInfluencers
 );
 router.post("/check-duplicates", influencerController.checkDuplicates);
+
+router.post("/:id/automation/cancel", stopAutomation);
 
 export default router;

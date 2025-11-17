@@ -21,20 +21,7 @@ export const authenticate = (
 
     const token = authHeader.substring(7);
 
-    console.log("🔐 [AUTH PRODUCTION] Token details:", {
-      tokenLength: token.length,
-      first10: token.substring(0, 10) + "...",
-      environment: process.env.NODE_ENV,
-    });
-
     const user = verifyToken(token);
-
-    console.log("✅ [AUTH PRODUCTION] User authenticated successfully:", {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      environment: process.env.NODE_ENV,
-    });
 
     req.user = user;
     next();

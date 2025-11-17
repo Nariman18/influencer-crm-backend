@@ -83,7 +83,7 @@ async function importExcelData() {
               instagramHandle,
               link,
               notes,
-              status: InfluencerStatus.PING_1,
+              status: InfluencerStatus.NOT_SENT,
               managerId: manager.id, // Assign to manager
             },
           });

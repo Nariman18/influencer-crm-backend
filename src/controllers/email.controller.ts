@@ -1,10 +1,11 @@
+// src/controllers/email.controller.ts
 import { Response } from "express";
 import prisma from "../config/prisma";
 import { AuthRequest, PaginatedResponse } from "../types";
 import { AppError } from "../middleware/errorHandler";
 import { google } from "googleapis";
-import { EmailStatus } from "@prisma/client";
-import { EmailJobData, redisQueue } from "../lib/redis-queue";
+import { EmailStatus, InfluencerStatus } from "@prisma/client";
+import redisQueue, { EmailJobData } from "../lib/redis-queue";
 
 const OAuth2 = google.auth.OAuth2;
 
@@ -176,13 +177,15 @@ export class EmailService {
 
         // Create email message in RFC 5322 format
         const emailLines = [
-          `From: "${user.name || "Influencer CRM"}" <${user.googleEmail}>`,
+          `From: "${user.name || "Influencer CRM Auto Mail"}" <${
+            user.googleEmail
+          }>`,
           `To: ${to}`,
           `Subject: ${subject}`,
           "Content-Type: text/html; charset=utf-8",
           "MIME-Version: 1.0",
           "",
-          this.wrapEmailBody(body, influencerName),
+          this.wrapEmailBody(body, influencerName, user.googleEmail),
         ];
 
         const email = emailLines.join("\r\n").trim();
@@ -248,9 +251,36 @@ export class EmailService {
   }
 
   /**
-   * Wrap email body with HTML template
+   * Wrap email body with HTML template and highlight the reply-to Gmail address.
+   * replyToEmail: optional email to highlight and show as "Contact" in the footer (click-to-mailto).
    */
-  private static wrapEmailBody(body: string, influencerName: string): string {
+  public static wrapEmailBody(
+    body: string,
+    influencerName: string,
+    replyToEmail?: string
+  ): string {
+    const safeBody = (body || "").replace(/\n/g, "<br>");
+
+    const highlightHtml = (email?: string) => {
+      if (!email) return "";
+
+      return `
+        <div style="margin-top:18px;padding:12px;border-radius:8px;background:#fff7ed;border:1px solid #ffd8a8;color:#92400e;">
+          <strong>Contact:</strong>
+          &nbsp;<a href="mailto:${email}" style="color:#b45309;text-decoration:underline;font-weight:600;">${email}</a>
+          <div style="font-size:13px;color:#92400e;margin-top:6px;">(Reply to this address to reach the team directly)</div>
+        </div>`;
+    };
+
+    const withReplyPlaceholder = replyToEmail
+      ? safeBody.replace(/{{\s*replyEmail\s*}}/gi, highlightHtml(replyToEmail))
+      : safeBody;
+
+    const finalBodyHtml =
+      withReplyPlaceholder.includes("{{replyEmail}}") || !replyToEmail
+        ? withReplyPlaceholder
+        : withReplyPlaceholder + highlightHtml(replyToEmail);
+
     return `
   <!DOCTYPE html>
   <html>
@@ -271,7 +301,7 @@ export class EmailService {
           background: white;
           border-radius: 8px;
           overflow: hidden;
-          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.06);
           margin: 20px;
         }
         .header { 
@@ -331,7 +361,7 @@ export class EmailService {
         </div>
         <div class="content">
           <div class="content-body">
-            ${body.replace(/\n/g, "<br>")}
+            ${finalBodyHtml}
           </div>
           <div class="signature">
             <p>Best regards,<br><strong>Influencer CRM Team</strong></p>
@@ -347,7 +377,21 @@ export class EmailService {
   }
 }
 
-// Export the controller functions (keep your existing functions, they'll now use the Gmail API version)
+/**
+ * Helper: replace variables like {{name}} in templates
+ */
+const replaceVariables = (
+  text: string,
+  variables: Record<string, string>
+): string => {
+  let result = text || "";
+  Object.entries(variables).forEach(([key, value]) => {
+    const regex = new RegExp(`{{\\s*${key}\\s*}}`, "g");
+    result = result.replace(regex, value ?? "");
+  });
+  return result;
+};
+
 /**
  * Validate email configuration for authenticated user
  */
@@ -421,18 +465,9 @@ export const validateEmailConfig = async (
   }
 };
 
-const replaceVariables = (
-  text: string,
-  variables: Record<string, string>
-): string => {
-  let result = text;
-  Object.entries(variables).forEach(([key, value]) => {
-    const regex = new RegExp(`{{${key}}}`, "g");
-    result = result.replace(regex, value);
-  });
-  return result;
-};
-
+/**
+ * Queue a single email (individual send)
+ */
 export const sendEmail = async (
   req: AuthRequest,
   res: Response
@@ -476,7 +511,9 @@ export const sendEmail = async (
       select: {
         googleAccessToken: true,
         googleRefreshToken: true,
+        googleEmail: true,
         email: true,
+        name: true,
       },
     });
 
@@ -562,7 +599,15 @@ export const sendEmail = async (
       bodyLength: body.length,
     });
 
-    // Create email record with PENDING status
+    // Build replyTo and HTML-wrapped body (we don't store htmlBody in DB to avoid schema changes)
+    const replyTo = currentUser!.googleEmail || process.env.MAILGUN_FROM_EMAIL;
+    const htmlBody = EmailService.wrapEmailBody(
+      body,
+      influencer.name || "",
+      replyTo
+    );
+
+    // Create email record with PENDING status (store original plain body)
     console.log("Creating email record in database...");
     const email = await prisma.email.create({
       data: {
@@ -570,7 +615,7 @@ export const sendEmail = async (
         templateId: templateId || null,
         sentById: req.user.id,
         subject,
-        body,
+        body, // keep original text for auditing/search
         status: EmailStatus.PENDING,
       },
     });
@@ -582,10 +627,11 @@ export const sendEmail = async (
       userId: req.user.id,
       to: influencer.email!,
       subject,
-      body,
+      body: htmlBody, // pass the HTML to the worker so Mailgun sends branded HTML
       influencerName: influencer.name,
       emailRecordId: email.id,
       influencerId: influencer.id,
+      replyTo, // ensure mailgun-client sets Reply-To header
     });
 
     console.log("Email queued successfully!");
@@ -614,6 +660,9 @@ export const sendEmail = async (
   }
 };
 
+/**
+ * Bulk send (uses addBulkEmailJobs) — wraps body per-influencer and passes replyTo.
+ */
 export const bulkSendEmails = async (
   req: AuthRequest,
   res: Response
@@ -623,7 +672,13 @@ export const bulkSendEmails = async (
       throw new AppError("Not authenticated", 401);
     }
 
-    const { influencerIds, templateId, variables } = req.body;
+    const {
+      influencerIds,
+      templateId,
+      variables,
+      startAutomation = false,
+      automationTemplates = [],
+    } = req.body;
 
     if (!Array.isArray(influencerIds) || influencerIds.length === 0) {
       throw new AppError("Invalid influencer IDs", 400);
@@ -645,6 +700,33 @@ export const bulkSendEmails = async (
     const jobsData: EmailJobData[] = [];
     const emailRecords: any[] = [];
 
+    const automationMetaString =
+      startAutomation && Array.isArray(automationTemplates)
+        ? JSON.stringify({
+            templates: automationTemplates,
+            startedAt: new Date().toISOString(),
+          })
+        : null;
+
+    const currentUser = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        googleEmail: true,
+        googleAccessToken: true,
+        googleRefreshToken: true,
+      },
+    });
+
+    if (!currentUser?.googleAccessToken || !currentUser?.googleRefreshToken) {
+      throw new AppError(
+        "No Google account connected. Please connect Gmail.",
+        400
+      );
+    }
+
+    const replyToGlobal =
+      currentUser.googleEmail || process.env.MAILGUN_FROM_EMAIL;
+
     for (const influencerId of influencerIds) {
       try {
         const influencer = await prisma.influencer.findUnique({
@@ -663,30 +745,53 @@ export const bulkSendEmails = async (
         };
 
         const subject = replaceVariables(template.subject, personalizedVars);
-        const body = replaceVariables(template.body, personalizedVars);
+        const plainBody = replaceVariables(template.body, personalizedVars);
 
-        // Create email record
+        // Build HTML-wrapped body (append or replace {{replyEmail}})
+        const htmlBody = EmailService.wrapEmailBody(
+          plainBody,
+          influencer.name || "",
+          replyToGlobal
+        );
+
+        // Create email record (store plain body)
         const email = await prisma.email.create({
           data: {
             influencerId,
             templateId,
             sentById: req.user.id,
             subject,
-            body,
+            body: plainBody,
             status: EmailStatus.PENDING,
+            ...(startAutomation ? { isAutomation: true } : {}),
+            ...(startAutomation && automationMetaString
+              ? { automationStepId: automationMetaString }
+              : {}),
           },
         });
 
-        jobsData.push({
+        // Include automation options in job payload (non-breaking)
+        const jobPayload: any = {
           userId: req.user.id,
           to: influencer.email!,
           subject,
-          body,
+          body: htmlBody, // pass HTML to queue
           influencerName: influencer.name,
           emailRecordId: email.id,
           influencerId: influencer.id,
-        });
+          replyTo: replyToGlobal,
+        };
 
+        if (startAutomation) {
+          jobPayload.automation = {
+            start: true,
+            templates: Array.isArray(automationTemplates)
+              ? automationTemplates
+              : [],
+          };
+        }
+
+        jobsData.push(jobPayload);
         emailRecords.push(email);
       } catch (error) {
         console.error(
@@ -696,14 +801,32 @@ export const bulkSendEmails = async (
       }
     }
 
-    // Use bulk processing for better performance
-    const jobIds = await redisQueue.addBulkEmailJobs(jobsData);
+    // Using bulk processing for better performance
+    const jobIds = await redisQueue.addBulkEmailJobs(jobsData, {
+      intervalSec: Number(process.env.BULK_SEND_INTERVAL_SEC) || 5,
+      jitterMs: Number(process.env.BULK_SEND_JITTER_MS) || 1500,
+    });
+
+    if (startAutomation) {
+      try {
+        await prisma.influencer.updateMany({
+          where: { id: { in: influencerIds } },
+          data: {
+            status: InfluencerStatus.PING_1,
+            lastContactDate: new Date(),
+          },
+        });
+      } catch (e) {
+        console.warn("Failed to set influencers to PING_1 en masse:", e);
+      }
+    }
 
     res.json({
       success: jobIds.length,
       failed: influencerIds.length - jobIds.length,
       total: influencerIds.length,
       queued: jobIds.length,
+      queuedIds: jobIds,
       message: `Queued ${jobIds.length} emails for processing`,
     });
   } catch (error) {
@@ -712,6 +835,9 @@ export const bulkSendEmails = async (
   }
 };
 
+/**
+ * Get emails list
+ */
 export const getEmails = async (
   req: AuthRequest,
   res: Response
@@ -724,12 +850,10 @@ export const getEmails = async (
 
     const skip = (page - 1) * limit;
 
-    // Properly type the where clause with EmailStatus enum
     const where: any = {
       ...(influencerId && { influencerId }),
     };
 
-    // Only add status filter if it's a valid EmailStatus
     if (status && Object.values(EmailStatus).includes(status)) {
       where.status = status;
     }

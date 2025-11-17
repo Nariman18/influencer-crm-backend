@@ -131,7 +131,7 @@ class ExcelImportService {
       link,
       notes: notes || null,
       managerId: managerId || null,
-      status: InfluencerStatus.PING_1,
+      status: InfluencerStatus.NOT_SENT,
     };
   }
 

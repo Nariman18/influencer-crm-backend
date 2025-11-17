@@ -1,3 +1,4 @@
+// src/routes/email.routes.ts - CORRECTED VERSION
 import { Router } from "express";
 import * as emailController from "../controllers/email.controller";
 import { authenticate } from "../middleware/auth";

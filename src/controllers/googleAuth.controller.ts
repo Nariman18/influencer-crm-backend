@@ -81,19 +81,7 @@ export const exchangeGoogleToken = async (
       throw new AppError("Failed to get email from Google account", 400);
     }
 
-    // Test Gmail API access**
-    try {
-      const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-      // Simple test to verify Gmail access
-      await gmail.users.getProfile({ userId: "me" });
-      console.log("Gmail API access verified");
-    } catch (gmailError: any) {
-      console.error("Gmail API access failed:", gmailError);
-      throw new AppError(
-        "Gmail API access not granted. Please make sure to grant all requested permissions.",
-        400
-      );
-    }
+    console.log("✅ Google OAuth successful - tokens received");
 
     res.json({
       accessToken: tokens.access_token,
@@ -154,11 +142,7 @@ export const connectGoogleAccount = async (
         "Token is valid, expires at:",
         new Date(tokenInfo.expiry_date!)
       );
-
-      // Test Gmail access
-      const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-      await gmail.users.getProfile({ userId: "me" });
-      console.log("Gmail access verified");
+      console.log("✅ Google OAuth tokens validated");
     } catch (validationError: any) {
       console.error("Token validation failed:", validationError);
       throw new AppError(

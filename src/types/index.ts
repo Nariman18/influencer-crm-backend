@@ -65,5 +65,23 @@ export interface ImportInfluencerData {
   notes?: string;
 }
 
+export interface AutomationStats {
+  activeAutomations: number;
+  pendingSteps: number;
+  completedSteps: number;
+  totalInfluencersInAutomation: number;
+  stepPerformance: Array<{
+    stepNumber: number;
+    _count: { id: number };
+  }>;
+}
+
+export interface AutomationSequenceData {
+  name: string;
+  description?: string;
+  influencerIds: string[];
+  templateIds: string[];
+}
+
 // Exporting the Prisma EmailStatus for use in my backend
 export { EmailStatus };

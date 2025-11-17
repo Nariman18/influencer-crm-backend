@@ -1,26 +1,37 @@
-import { Response } from 'express';
-import prisma from '../config/prisma';
-import { AuthRequest } from '../types';
-import { AppError } from '../middleware/errorHandler';
+import { Response } from "express";
+import prisma from "../config/prisma";
+import { AuthRequest } from "../types";
+import { AppError } from "../middleware/errorHandler";
 
-export const getEmailTemplates = async (req: AuthRequest, res: Response): Promise<void> => {
+export const getEmailTemplates = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
   try {
-    const isActive = req.query.isActive === 'true' ? true : req.query.isActive === 'false' ? false : undefined;
+    const isActive =
+      req.query.isActive === "true"
+        ? true
+        : req.query.isActive === "false"
+        ? false
+        : undefined;
 
     const templates = await prisma.emailTemplate.findMany({
       where: {
         ...(isActive !== undefined && { isActive }),
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
 
     res.json(templates);
   } catch (error) {
-    throw new AppError('Failed to fetch email templates', 500);
+    throw new AppError("Failed to fetch email templates", 500);
   }
 };
 
-export const getEmailTemplate = async (req: AuthRequest, res: Response): Promise<void> => {
+export const getEmailTemplate = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
   try {
     const { id } = req.params;
 
@@ -29,17 +40,20 @@ export const getEmailTemplate = async (req: AuthRequest, res: Response): Promise
     });
 
     if (!template) {
-      throw new AppError('Email template not found', 404);
+      throw new AppError("Email template not found", 404);
     }
 
     res.json(template);
   } catch (error) {
     if (error instanceof AppError) throw error;
-    throw new AppError('Failed to fetch email template', 500);
+    throw new AppError("Failed to fetch email template", 500);
   }
 };
 
-export const createEmailTemplate = async (req: AuthRequest, res: Response): Promise<void> => {
+export const createEmailTemplate = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
   try {
     const { name, subject, body, variables } = req.body;
 
@@ -54,11 +68,14 @@ export const createEmailTemplate = async (req: AuthRequest, res: Response): Prom
 
     res.status(201).json(template);
   } catch (error) {
-    throw new AppError('Failed to create email template', 500);
+    throw new AppError("Failed to create email template", 500);
   }
 };
 
-export const updateEmailTemplate = async (req: AuthRequest, res: Response): Promise<void> => {
+export const updateEmailTemplate = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
   try {
     const { id } = req.params;
     const { name, subject, body, variables, isActive } = req.body;
@@ -77,11 +94,14 @@ export const updateEmailTemplate = async (req: AuthRequest, res: Response): Prom
     res.json(template);
   } catch (error) {
     if (error instanceof AppError) throw error;
-    throw new AppError('Failed to update email template', 500);
+    throw new AppError("Failed to update email template", 500);
   }
 };
 
-export const deleteEmailTemplate = async (req: AuthRequest, res: Response): Promise<void> => {
+export const deleteEmailTemplate = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
   try {
     const { id } = req.params;
 
@@ -89,9 +109,8 @@ export const deleteEmailTemplate = async (req: AuthRequest, res: Response): Prom
       where: { id },
     });
 
-    res.json({ message: 'Email template deleted successfully' });
+    res.json({ message: "Email template deleted successfully" });
   } catch (error) {
-    throw new AppError('Failed to delete email template', 500);
+    throw new AppError("Failed to delete email template", 500);
   }
 };
-

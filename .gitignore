@@ -1,5 +1,76 @@
-node_modules
-# Keep environment variables out of version control
-.env
+# ============================================
+# Node.js
+# ============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-/generated/prisma
+# ============================================
+# Environment Variables (IGNORE ALL ENV FILES)
+# ============================================
+.env
+.env.*
+!.env.example
+
+# Ignore specific env files you use
+.env.server
+.env.worker
+.env.production
+.env.development
+.env.local
+.env.backup
+
+# ============================================
+# Build Output
+# ============================================
+dist/
+build/
+.tmp/
+
+# ============================================
+# Prisma
+# ============================================
+/prisma/generated/
+/generated/
+/generated/prisma/
+
+# ============================================
+# Redis Dump
+# ============================================
+dump.rdb
+
+# ============================================
+# Logs
+# ============================================
+logs/
+*.log
+*.log.*
+
+# ============================================
+# Temporary & Upload Files
+# ============================================
+tmp/
+temp/
+uploads/
+*.tmp
+
+# Excel export/import temp files
+*.xlsx
+*.xls
+*.csv
+
+# ============================================
+# OS / Editor files
+# ============================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ============================================
+# Cache folders
+# ============================================
+.cache/
+.eslintcache

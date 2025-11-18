@@ -1,4 +1,3 @@
-// src/controllers/email.controller.ts
 import { Response } from "express";
 import prisma from "../config/prisma";
 import { AuthRequest, PaginatedResponse } from "../types";
@@ -177,15 +176,13 @@ export class EmailService {
 
         // Create email message in RFC 5322 format
         const emailLines = [
-          `From: "${user.name || "Influencer CRM Auto Mail"}" <${
-            user.googleEmail
-          }>`,
+          `From: "${user.name || "Influencer CRM"}" <${user.googleEmail}>`,
           `To: ${to}`,
           `Subject: ${subject}`,
           "Content-Type: text/html; charset=utf-8",
           "MIME-Version: 1.0",
           "",
-          this.wrapEmailBody(body, influencerName, user.googleEmail),
+          this.wrapEmailBody(body, influencerName),
         ];
 
         const email = emailLines.join("\r\n").trim();
@@ -251,36 +248,9 @@ export class EmailService {
   }
 
   /**
-   * Wrap email body with HTML template and highlight the reply-to Gmail address.
-   * replyToEmail: optional email to highlight and show as "Contact" in the footer (click-to-mailto).
+   * Wrap email body with HTML template
    */
-  public static wrapEmailBody(
-    body: string,
-    influencerName: string,
-    replyToEmail?: string
-  ): string {
-    const safeBody = (body || "").replace(/\n/g, "<br>");
-
-    const highlightHtml = (email?: string) => {
-      if (!email) return "";
-
-      return `
-        <div style="margin-top:18px;padding:12px;border-radius:8px;background:#fff7ed;border:1px solid #ffd8a8;color:#92400e;">
-          <strong>Contact:</strong>
-          &nbsp;<a href="mailto:${email}" style="color:#b45309;text-decoration:underline;font-weight:600;">${email}</a>
-          <div style="font-size:13px;color:#92400e;margin-top:6px;">(Reply to this address to reach the team directly)</div>
-        </div>`;
-    };
-
-    const withReplyPlaceholder = replyToEmail
-      ? safeBody.replace(/{{\s*replyEmail\s*}}/gi, highlightHtml(replyToEmail))
-      : safeBody;
-
-    const finalBodyHtml =
-      withReplyPlaceholder.includes("{{replyEmail}}") || !replyToEmail
-        ? withReplyPlaceholder
-        : withReplyPlaceholder + highlightHtml(replyToEmail);
-
+  private static wrapEmailBody(body: string, influencerName: string): string {
     return `
   <!DOCTYPE html>
   <html>
@@ -301,7 +271,7 @@ export class EmailService {
           background: white;
           border-radius: 8px;
           overflow: hidden;
-          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.06);
+          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
           margin: 20px;
         }
         .header { 
@@ -361,7 +331,7 @@ export class EmailService {
         </div>
         <div class="content">
           <div class="content-body">
-            ${finalBodyHtml}
+            ${body.replace(/\n/g, "<br>")}
           </div>
           <div class="signature">
             <p>Best regards,<br><strong>Influencer CRM Team</strong></p>
@@ -377,21 +347,7 @@ export class EmailService {
   }
 }
 
-/**
- * Helper: replace variables like {{name}} in templates
- */
-const replaceVariables = (
-  text: string,
-  variables: Record<string, string>
-): string => {
-  let result = text || "";
-  Object.entries(variables).forEach(([key, value]) => {
-    const regex = new RegExp(`{{\\s*${key}\\s*}}`, "g");
-    result = result.replace(regex, value ?? "");
-  });
-  return result;
-};
-
+// Export the controller functions (keep your existing functions, they'll now use the Gmail API version)
 /**
  * Validate email configuration for authenticated user
  */
@@ -465,9 +421,18 @@ export const validateEmailConfig = async (
   }
 };
 
-/**
- * Queue a single email (individual send)
- */
+const replaceVariables = (
+  text: string,
+  variables: Record<string, string>
+): string => {
+  let result = text;
+  Object.entries(variables).forEach(([key, value]) => {
+    const regex = new RegExp(`{{${key}}}`, "g");
+    result = result.replace(regex, value);
+  });
+  return result;
+};
+
 export const sendEmail = async (
   req: AuthRequest,
   res: Response
@@ -511,9 +476,7 @@ export const sendEmail = async (
       select: {
         googleAccessToken: true,
         googleRefreshToken: true,
-        googleEmail: true,
         email: true,
-        name: true,
       },
     });
 
@@ -599,15 +562,7 @@ export const sendEmail = async (
       bodyLength: body.length,
     });
 
-    // Build replyTo and HTML-wrapped body (we don't store htmlBody in DB to avoid schema changes)
-    const replyTo = currentUser!.googleEmail || process.env.MAILGUN_FROM_EMAIL;
-    const htmlBody = EmailService.wrapEmailBody(
-      body,
-      influencer.name || "",
-      replyTo
-    );
-
-    // Create email record with PENDING status (store original plain body)
+    // Create email record with PENDING status
     console.log("Creating email record in database...");
     const email = await prisma.email.create({
       data: {
@@ -615,7 +570,7 @@ export const sendEmail = async (
         templateId: templateId || null,
         sentById: req.user.id,
         subject,
-        body, // keep original text for auditing/search
+        body,
         status: EmailStatus.PENDING,
       },
     });
@@ -627,11 +582,10 @@ export const sendEmail = async (
       userId: req.user.id,
       to: influencer.email!,
       subject,
-      body: htmlBody, // pass the HTML to the worker so Mailgun sends branded HTML
+      body,
       influencerName: influencer.name,
       emailRecordId: email.id,
       influencerId: influencer.id,
-      replyTo, // ensure mailgun-client sets Reply-To header
     });
 
     console.log("Email queued successfully!");
@@ -660,9 +614,6 @@ export const sendEmail = async (
   }
 };
 
-/**
- * Bulk send (uses addBulkEmailJobs) — wraps body per-influencer and passes replyTo.
- */
 export const bulkSendEmails = async (
   req: AuthRequest,
   res: Response
@@ -700,6 +651,8 @@ export const bulkSendEmails = async (
     const jobsData: EmailJobData[] = [];
     const emailRecords: any[] = [];
 
+    // We'll stringify the automationTemplates into the email.automationStepId field for now
+    // (quick, backwards-compatible approach). Example content: JSON.stringify({ templates: [...], startedAt: "..." })
     const automationMetaString =
       startAutomation && Array.isArray(automationTemplates)
         ? JSON.stringify({
@@ -707,25 +660,6 @@ export const bulkSendEmails = async (
             startedAt: new Date().toISOString(),
           })
         : null;
-
-    const currentUser = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      select: {
-        googleEmail: true,
-        googleAccessToken: true,
-        googleRefreshToken: true,
-      },
-    });
-
-    if (!currentUser?.googleAccessToken || !currentUser?.googleRefreshToken) {
-      throw new AppError(
-        "No Google account connected. Please connect Gmail.",
-        400
-      );
-    }
-
-    const replyToGlobal =
-      currentUser.googleEmail || process.env.MAILGUN_FROM_EMAIL;
 
     for (const influencerId of influencerIds) {
       try {
@@ -745,24 +679,18 @@ export const bulkSendEmails = async (
         };
 
         const subject = replaceVariables(template.subject, personalizedVars);
-        const plainBody = replaceVariables(template.body, personalizedVars);
+        const body = replaceVariables(template.body, personalizedVars);
 
-        // Build HTML-wrapped body (append or replace {{replyEmail}})
-        const htmlBody = EmailService.wrapEmailBody(
-          plainBody,
-          influencer.name || "",
-          replyToGlobal
-        );
-
-        // Create email record (store plain body)
+        // Create email record
         const email = await prisma.email.create({
           data: {
             influencerId,
             templateId,
             sentById: req.user.id,
             subject,
-            body: plainBody,
+            body,
             status: EmailStatus.PENDING,
+            // mark automation flag and store meta string if automation requested
             ...(startAutomation ? { isAutomation: true } : {}),
             ...(startAutomation && automationMetaString
               ? { automationStepId: automationMetaString }
@@ -775,11 +703,10 @@ export const bulkSendEmails = async (
           userId: req.user.id,
           to: influencer.email!,
           subject,
-          body: htmlBody, // pass HTML to queue
+          body,
           influencerName: influencer.name,
           emailRecordId: email.id,
           influencerId: influencer.id,
-          replyTo: replyToGlobal,
         };
 
         if (startAutomation) {
@@ -835,9 +762,6 @@ export const bulkSendEmails = async (
   }
 };
 
-/**
- * Get emails list
- */
 export const getEmails = async (
   req: AuthRequest,
   res: Response
@@ -850,10 +774,12 @@ export const getEmails = async (
 
     const skip = (page - 1) * limit;
 
+    // Properly type the where clause with EmailStatus enum
     const where: any = {
       ...(influencerId && { influencerId }),
     };
 
+    // Only add status filter if it's a valid EmailStatus
     if (status && Object.values(EmailStatus).includes(status)) {
       where.status = status;
     }

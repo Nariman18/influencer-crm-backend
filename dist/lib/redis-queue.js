@@ -383,6 +383,15 @@ const startWorkers = async () => {
                         "X-CRM-INFLUENCER-ID": data.influencerId ?? "",
                     },
                 });
+                console.log("[emailWorker] persisting email result to DB", {
+                    emailRecordId: data.emailRecordId,
+                    success: result.success,
+                    mailgunId: result.id,
+                    mailgunMessageId: result.messageId,
+                    errorMessagePreview: result.error
+                        ? normalizeError(result.error)
+                        : null,
+                });
                 // Persist send result only if we have an email record id
                 if (hasEmailId) {
                     try {
@@ -618,7 +627,6 @@ const addBulkEmailJobs = async (jobsData, opts) => {
     if (!Array.isArray(jobsData) || jobsData.length === 0)
         return ids;
     const isProd = process.env.NODE_ENV === "production";
-    // sensible defaults (you can override via env or opt param)
     const envInterval = Number(process.env.BULK_SEND_INTERVAL_SEC) ||
         (isProd ? 5 : Number(process.env.DEV_BULK_SEND_INTERVAL_SEC) || 2);
     const intervalSec = typeof opts?.intervalSec === "number" ? opts.intervalSec : envInterval;

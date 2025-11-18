@@ -46,7 +46,6 @@ router.post("/mailgun", express_1.default.json(), async (req, res) => {
                 data: { openedAt: new Date(), status: "OPENED" },
             });
         }
-        // Mailgun supports many events — log others for analytics
         res.status(200).json({ ok: true });
     }
     catch (err) {

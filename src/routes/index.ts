@@ -9,6 +9,7 @@ import emailRoutes from "./email.routes";
 import dashboardRoutes from "./dashboard.routes";
 import queueRoutes from "./queue.routes";
 import { ImportController } from "../controllers/import.controller";
+import debugQueue from "./debug-queue";
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use("/queue", queueRoutes);
 // Import routes
 router.post("/import/influencers", ImportController.importInfluencers);
 router.post("/import/influencers/batch", ImportController.importMultipleFiles);
+router.use("/debug", debugQueue);
 
 export default router;

@@ -1,7 +1,5 @@
-// src/worker.ts
-import "dotenv/config";
+import "./env";
 
-// Importing this file instantiates queues, workers & schedulers
 import redisQueue, { setupEventListeners } from "./lib/redis-queue";
 
 (async () => {

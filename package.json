@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "main": "dist/server.js",
   "scripts": {
-    "dev:server": "nodemon --watch src -e ts --exec \"ts-node src/server.ts\"",
-    "dev:worker": "nodemon --watch src -e ts --exec \"ts-node src/worker.ts\"",
+    "dev:server": "dotenv -e .env.server -- nodemon --watch src -e ts --exec \"ts-node src/server.ts\"",
+    "dev:worker": "dotenv -e .env.worker -- nodemon --watch src -e ts --exec \"ts-node src/worker.ts\"",
     "build": "prisma generate && tsc && echo 'TypeScript compilation completed'",
     "start": "node dist/server.js",
     "start:worker": "RUN_WORKER=true node ./dist/worker.js",
@@ -28,7 +28,6 @@
     "@types/ioredis": "^4.28.10",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.0.0",
-    "@types/node": "^24.10.0",
     "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^7.0.3",
     "@types/ws": "^8.18.1",
@@ -53,6 +52,8 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/node": "^24.10.1",
+    "dotenv-cli": "^11.0.0",
     "nodemon": "^3.1.10",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"

@@ -3,6 +3,7 @@ import prisma from "../config/prisma";
 import { google } from "googleapis";
 import { emailSendQueue, followUpQueue } from "./redis-queue";
 import { EmailStatus, InfluencerStatus } from "@prisma/client";
+import { buildEmailHtml } from "./email-wrap-body";
 
 const OAuth2 = google.auth.OAuth2;
 
@@ -163,12 +164,6 @@ export const checkForReplyAndHandle = async (jobData: any) => {
   }
 };
 
-/**
- * No-reply handling:
- * - step=1: send 24H reminder -> schedule step=2
- * - step=2: send 48H reminder -> schedule step=3 (final verification)
- * - step=3: final verification (NO SEND) -> mark influencer REJECTED (do not change email statuses)
- */
 const handleNoReplyFallback = async (jobData: any) => {
   const { influencerId, emailRecordId, step = 1, userId } = jobData;
 
@@ -177,7 +172,6 @@ const handleNoReplyFallback = async (jobData: any) => {
     return;
   }
 
-  // Step 3: final verification (do NOT modify the send-status of historical sent emails)
   if (step === 3) {
     try {
       await prisma.influencer.update({
@@ -187,8 +181,7 @@ const handleNoReplyFallback = async (jobData: any) => {
     } catch (e) {
       console.warn("[followup] failed to set influencer to REJECTED:", e);
     }
-
-    // do NOT set email to FAILED here — keep the send history intact
+    // do NOT change historical email send statuses
     return;
   }
 
@@ -235,7 +228,6 @@ const handleNoReplyFallback = async (jobData: any) => {
     return;
   }
 
-  // Prepare personalization and ensure influencer/user exist
   const influencer = await prisma.influencer.findUnique({
     where: { id: influencerId },
   });
@@ -257,6 +249,15 @@ const handleNoReplyFallback = async (jobData: any) => {
     .replace(/{{name}}/g, influencer.name || "")
     .replace(/{{email}}/g, influencer.email || "");
 
+  // Wrap follow-up HTML using user's email for reply links
+  const senderAddress =
+    user?.googleEmail || user?.email || process.env.MAILGUN_FROM_EMAIL || "";
+  const wrappedBody = buildEmailHtml(
+    personalizedBody,
+    influencer.name || "",
+    senderAddress
+  );
+
   // Create follow-up email record
   let newEmail;
   try {
@@ -266,7 +267,7 @@ const handleNoReplyFallback = async (jobData: any) => {
         templateId: nextTemplate.id,
         sentById: userId,
         subject: personalizedSubject,
-        body: personalizedBody,
+        body: wrappedBody,
         status: EmailStatus.PENDING,
         isAutomation: true,
       },
@@ -282,7 +283,7 @@ const handleNoReplyFallback = async (jobData: any) => {
       userId,
       to: influencer.email,
       subject: personalizedSubject,
-      body: personalizedBody,
+      body: wrappedBody,
       influencerName: influencer.name,
       emailRecordId: newEmail.id,
       influencerId,
@@ -293,10 +294,8 @@ const handleNoReplyFallback = async (jobData: any) => {
       influencerId,
       emailRecordId: newEmail.id,
     });
-    // continue to scheduling the next check anyway
   }
 
-  // Update influencer pipeline to PING_2 or PING_3 now that follow-up has been created/sent
   const nextStatus =
     step === 1 ? InfluencerStatus.PING_2 : InfluencerStatus.PING_3;
   try {
@@ -308,7 +307,6 @@ const handleNoReplyFallback = async (jobData: any) => {
     console.warn("[followup] failed to update influencer status:", e);
   }
 
-  // Schedule next check: if step=1 -> schedule step=2 after sendDelay; if step=2 -> schedule step=3 after final wait
   try {
     if (step === 1) {
       const nextCheckJob = await followUpQueue.add(

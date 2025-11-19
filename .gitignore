@@ -8,7 +8,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # ============================================
-# Environment Variables (IGNORE ALL ENV FILES)
+# Environment Variables 
 # ============================================
 .env
 .env.*

@@ -11,7 +11,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "prisma:studio": "prisma studio",
+    "prisma:studio": "dotenv -e .env.server -- prisma studio",
     "import:excel": "node scripts/importExcel.js",
     "import:multipleExcel": "node scripts/importMultipleExcel.js",
     "seed:managers": "node scripts/seedManagers.js"
@@ -37,6 +37,7 @@
     "bullmq": "^5.63.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
     "express": "^5.1.0",
     "express-validator": "^7.3.0",
     "form-data": "^4.0.4",
@@ -48,6 +49,7 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.10",
     "prisma": "^6.18.0",
+    "socket.io": "^4.8.1",
     "ws": "^8.18.3",
     "xlsx": "^0.18.5"
   },

@@ -1,7 +1,9 @@
 import { Response } from "express";
-import prisma from "../config/prisma";
 import { AuthRequest, PaginatedResponse } from "../types";
 import { AppError } from "../middleware/errorHandler";
+import { getPrisma } from "../config/prisma";
+
+const prisma = getPrisma();
 
 export const getCampaigns = async (
   req: AuthRequest,

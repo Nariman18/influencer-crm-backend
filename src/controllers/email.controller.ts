@@ -1,12 +1,14 @@
 // src/controllers/email.controller.ts
 import { Response } from "express";
-import prisma from "../config/prisma";
+import { getPrisma } from "../config/prisma";
 import { AuthRequest, PaginatedResponse } from "../types";
 import { AppError } from "../middleware/errorHandler";
 import { google } from "googleapis";
 import { EmailStatus, InfluencerStatus } from "@prisma/client";
 import redisQueue, { EmailJobData } from "../lib/redis-queue";
 import { buildEmailHtml } from "../lib/email-wrap-body";
+
+const prisma = getPrisma();
 
 const OAuth2 = google.auth.OAuth2;
 

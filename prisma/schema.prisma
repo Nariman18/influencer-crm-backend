@@ -66,6 +66,9 @@ model User {
   emailsSent        Email[]
   auditLogs         AuditLog[]
   managedInfluencers Influencer[] 
+
+  importJobs       ImportJob[]
+  exportJobs       ExportJob[]
   
   @@map("users")
 }
@@ -93,6 +96,41 @@ model Influencer {
   campaigns       CampaignInfluencer[]
   
   @@map("influencers")
+}
+
+model ImportJob {
+  id          String   @id @default(uuid())
+  managerId   String
+  filename    String
+  filePath    String?
+  status      String   @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED
+  totalRows   Int?
+  successCount Int?
+  failedCount  Int?
+  duplicates  Json?    // optional JSON of duplicates
+  errors      Json?    // optional JSON of errors
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  manager     User     @relation(fields: [managerId], references: [id], onDelete: Cascade)
+
+  @@map("import_jobs")
+}
+
+model ExportJob {
+  id         String   @id @default(uuid())
+  managerId  String
+  filters    Json?    // optional filters used for export
+  filePath   String?  // local path or S3 key
+  status     String   @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED
+  totalRows  Int?
+  error      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  manager    User     @relation(fields: [managerId], references: [id], onDelete: Cascade)
+
+  @@map("export_jobs")
 }
 
 model Contract {

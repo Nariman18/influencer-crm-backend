@@ -1,7 +1,9 @@
 import { Response } from "express";
-import prisma from "../config/prisma";
+import { getPrisma } from "../config/prisma";
 import { AuthRequest, DashboardStats } from "../types";
 import { AppError } from "../middleware/errorHandler";
+
+const prisma = getPrisma();
 
 export const getDashboardStats = async (
   _req: AuthRequest,

@@ -1,10 +1,12 @@
 // src/controllers/influencer.controller.ts
 import { Response } from "express";
-import prisma from "../config/prisma";
+import { getPrisma } from "../config/prisma";
 import { AuthRequest, PaginatedResponse } from "../types";
 import { AppError } from "../middleware/errorHandler";
 import { EmailStatus, InfluencerStatus } from "@prisma/client";
 import redisQueue from "../lib/redis-queue";
+
+const prisma = getPrisma();
 
 /**
  * Helper function to check for duplicates.

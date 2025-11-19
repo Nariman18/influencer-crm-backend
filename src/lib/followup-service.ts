@@ -1,9 +1,11 @@
 // src/lib/followup-service.ts
-import prisma from "../config/prisma";
+import { getPrisma } from "../config/prisma";
 import { google } from "googleapis";
 import { emailSendQueue, followUpQueue } from "./redis-queue";
 import { EmailStatus, InfluencerStatus } from "@prisma/client";
 import { buildEmailHtml } from "./email-wrap-body";
+
+const prisma = getPrisma();
 
 const OAuth2 = google.auth.OAuth2;
 

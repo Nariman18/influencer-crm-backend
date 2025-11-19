@@ -1,6 +1,8 @@
 import { Response, NextFunction } from "express";
 import { AuthRequest } from "../types";
-import prisma from "../config/prisma";
+import { getPrisma } from "../config/prisma";
+
+const prisma = getPrisma();
 
 export const auditLog = (action: string, entity: string) => {
   return async (

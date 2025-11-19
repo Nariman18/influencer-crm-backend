@@ -1,8 +1,10 @@
 import { Response } from "express";
-import prisma from "../config/prisma";
+import { getPrisma } from "../config/prisma";
 import { AuthRequest, PaginatedResponse } from "../types";
 import { AppError } from "../middleware/errorHandler";
 import { ContractStatus } from "@prisma/client";
+
+const prisma = getPrisma();
 
 export const getContracts = async (
   req: AuthRequest,

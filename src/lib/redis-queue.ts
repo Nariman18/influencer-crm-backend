@@ -11,10 +11,12 @@
  */
 
 import IORedis from "ioredis";
-import prisma from "../config/prisma";
+import { getPrisma } from "../config/prisma";
 import { sendMailgunEmail } from "./mailgun-client";
 import { checkForReplyAndHandle } from "./followup-service";
 import { EmailStatus, InfluencerStatus } from "@prisma/client";
+
+const prisma = getPrisma();
 
 export type EmailJobData = {
   userId: string;

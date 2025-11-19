@@ -1,185 +1,156 @@
-import { Request, Response } from "express";
-import { ExcelImportService } from "../services/excelImport.service";
+// src/controllers/import.controller.ts
+import { Response } from "express";
+import multer from "multer";
 import path from "path";
-import { PrismaClient } from "@prisma/client";
+import fs from "fs";
+import { getPrisma } from "../config/prisma";
+import { enqueueImport } from "../lib/import-export-queue";
+import { AuthRequest } from "../types";
+import { AppError } from "../middleware/errorHandler";
 
-const prisma = new PrismaClient();
+const prisma = getPrisma();
 
-// Extend Express Request to include user
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    name: string;
-    role: string;
-  };
-}
+const uploadDir = path.join(process.cwd(), "tmp", "imports");
+fs.mkdirSync(uploadDir, { recursive: true });
 
-export class ImportController {
-  static async importInfluencers(req: AuthenticatedRequest, res: Response) {
-    try {
-      // Get manager ID from authenticated user
-      const managerId = req.user?.id;
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, uploadDir),
+    filename: (_req, file, cb) =>
+      cb(null, `${Date.now()}-${file.originalname}`),
+  }),
+  limits: {
+    fileSize: Number(process.env.MAX_IMPORT_FILE_MB || 200) * 1024 * 1024,
+  },
+});
 
-      if (!managerId) {
-        return res.status(401).json({
-          error: "Authentication required",
+export const ImportController = {
+  importInfluencers: [
+    upload.single("file"),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        if (!req.user?.id) throw new AppError("Not authenticated", 401);
+        const file = (req as any).file as Express.Multer.File | undefined;
+        if (!file) throw new AppError("File required", 400);
+
+        const jobRecord = await prisma.importJob.create({
+          data: {
+            managerId: req.user.id,
+            filename: file.originalname,
+            filePath: file.path,
+            status: "PENDING",
+          },
         });
-      }
 
-      const { filename = "Melik.xlsx", sheetName = "Ping" } = req.body;
-
-      const filePath = path.join(process.cwd(), filename);
-
-      const result = await ExcelImportService.importInfluencersFromExcel(
-        filePath,
-        managerId, // Pass manager ID
-        sheetName
-      );
-
-      res.json({
-        message: "Import completed",
-        file: filename,
-        sheet: sheetName,
-        imported: result.success,
-        errors: result.errors,
-        totalProcessed: result.success + result.errors.length,
-        managerId: managerId,
-      });
-    } catch (error) {
-      console.error("Import error:", error);
-      res.status(500).json({
-        error: "Import failed",
-        details: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  }
-
-  static async importMultipleFiles(req: AuthenticatedRequest, res: Response) {
-    try {
-      const managerId = req.user?.id;
-
-      if (!managerId) {
-        return res.status(401).json({
-          error: "Authentication required",
+        await enqueueImport({
+          managerId: req.user.id,
+          filePath: file.path,
+          filename: file.originalname,
+          importJobId: jobRecord.id,
         });
+
+        return res
+          .status(202)
+          .json({ message: "Import queued", jobId: jobRecord.id });
+      } catch (err) {
+        console.error("importInfluencers error:", err);
+        if (err instanceof AppError) throw err;
+        throw new AppError("Failed to queue import", 500);
       }
+    },
+  ],
 
-      const { files } = req.body;
+  importMultipleFiles: [
+    upload.array("files"),
+    async (req: AuthRequest, res: Response) => {
+      try {
+        if (!req.user?.id) throw new AppError("Not authenticated", 401);
+        const files = (req as any).files as Express.Multer.File[] | undefined;
+        if (!files || files.length === 0)
+          throw new AppError("Files required", 400);
 
-      if (!files || !Array.isArray(files)) {
-        return res.status(400).json({
-          error: "Files array is required",
-        });
-      }
+        const results: Array<{ filename: string; jobId: string }> = [];
 
-      const results = [];
-
-      for (const fileConfig of files) {
-        const { filename, sheetName = "Ping" } = fileConfig;
-
-        if (!filename) {
-          results.push({
-            file: filename,
-            error: "Filename is required",
+        for (const file of files) {
+          const jobRecord = await prisma.importJob.create({
+            data: {
+              managerId: req.user.id,
+              filename: file.originalname,
+              filePath: file.path,
+              status: "PENDING",
+            },
           });
-          continue;
+
+          await enqueueImport({
+            managerId: req.user.id,
+            filePath: file.path,
+            filename: file.originalname,
+            importJobId: jobRecord.id,
+          });
+
+          results.push({ filename: file.originalname, jobId: jobRecord.id });
         }
 
-        try {
-          const filePath = path.join(process.cwd(), filename);
-          const result = await ExcelImportService.importInfluencersFromExcel(
-            filePath,
-            managerId, // Pass manager ID
-            sheetName
-          );
-
-          results.push({
-            file: filename,
-            sheet: sheetName,
-            success: result.success,
-            errors: result.errors,
-            totalProcessed: result.success + result.errors.length,
-            managerId: managerId,
-          });
-        } catch (error) {
-          results.push({
-            file: filename,
-            error: error instanceof Error ? error.message : "Unknown error",
-          });
-        }
+        return res
+          .status(202)
+          .json({ message: "Batch import queued", jobs: results });
+      } catch (err) {
+        console.error("importMultipleFiles error:", err);
+        if (err instanceof AppError) throw err;
+        throw new AppError("Failed to queue batch imports", 500);
       }
+    },
+  ],
 
-      res.json({
-        message: "Batch import completed",
-        managerId: managerId,
-        results,
-      });
-    } catch (error) {
-      console.error("Batch import error:", error);
-      res.status(500).json({
-        error: "Batch import failed",
-        details: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  }
-
-  // New endpoint for manager to import their specific file
-  static async importManagerFile(req: AuthenticatedRequest, res: Response) {
+  getImportStatus: async (req: AuthRequest, res: Response) => {
     try {
-      const managerId = req.user?.id;
+      if (!req.user?.id) throw new AppError("Not authenticated", 401);
+      const { jobId } = req.params;
+      if (!jobId) throw new AppError("jobId is required", 400);
 
-      if (!managerId) {
-        return res.status(401).json({
-          error: "Authentication required",
-        });
+      const job = await prisma.importJob.findUnique({ where: { id: jobId } });
+      if (!job) throw new AppError("Not found", 404);
+      if (job.managerId !== req.user.id)
+        throw new AppError("Not authorized", 403);
+
+      return res.json(job);
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      throw new AppError("Failed to get import status", 500);
+    }
+  },
+
+  cancelImportJob: async (req: AuthRequest, res: Response) => {
+    try {
+      if (!req.user?.id) throw new AppError("Not authenticated", 401);
+      const { jobId } = req.params;
+      if (!jobId) throw new AppError("jobId is required", 400);
+
+      const job = await prisma.importJob.findUnique({ where: { id: jobId } });
+      if (!job) throw new AppError("Not found", 404);
+      if (job.managerId !== req.user.id)
+        throw new AppError("Not authorized", 403);
+
+      if (!["PENDING", "PROCESSING"].includes(job.status)) {
+        return res
+          .status(400)
+          .json({ message: "Job cannot be cancelled in current status" });
       }
 
-      const { filename, sheetName = "Ping" } = req.body;
-
-      if (!filename) {
-        return res.status(400).json({
-          error: "Filename is required",
-        });
-      }
-
-      // Validate that filename matches manager's pattern
-      const manager = await prisma.user.findUnique({
-        where: { id: managerId },
-        select: { name: true, email: true },
-      });
-
-      if (!manager) {
-        return res.status(404).json({
-          error: "Manager not found",
-        });
-      }
-
-      const filePath = path.join(process.cwd(), filename);
-
-      const result = await ExcelImportService.importInfluencersFromExcel(
-        filePath,
-        managerId,
-        sheetName
-      );
-
-      res.json({
-        message: "Manager import completed",
-        manager: {
-          id: managerId,
-          name: manager.name,
-          email: manager.email,
+      await prisma.importJob.update({
+        where: { id: jobId },
+        data: {
+          status: "FAILED",
+          errors: [{ error: "Cancelled by user" }] as any,
         },
-        file: filename,
-        imported: result.success,
-        errors: result.errors,
       });
-    } catch (error) {
-      console.error("Manager import error:", error);
-      res.status(500).json({
-        error: "Import failed",
-        details: error instanceof Error ? error.message : "Unknown error",
-      });
+
+      return res.json({ success: true, message: "Job cancelled" });
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      throw new AppError("Failed to cancel import job", 500);
     }
-  }
-}
+  },
+};
+
+export default ImportController;

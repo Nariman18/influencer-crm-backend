@@ -1,10 +1,12 @@
 import { Request, Response } from "express";
 import { google } from "googleapis";
-import prisma from "../config/prisma";
+import { getPrisma } from "../config/prisma";
 import { AppError } from "../middleware/errorHandler";
 import { AuthRequest } from "../types";
 
 const OAuth2 = google.auth.OAuth2;
+
+const prisma = getPrisma();
 
 /**
  * Enhanced token exchange with better error handling

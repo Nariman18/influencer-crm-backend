@@ -1,7 +1,9 @@
 // routes/webhooks.ts
 import express from "express";
-import prisma from "../config/prisma";
+import { getPrisma } from "../config/prisma";
 const router = express.Router();
+
+const prisma = getPrisma();
 
 router.post("/mailgun", express.json(), async (req, res) => {
   try {

@@ -9,7 +9,7 @@ import { PrismaClient } from "@prisma/client";
  * - Logs whether DATABASE_URL was present when client is created.
  */
 
-// Augment the NodeJS Global interface (TypeScript-friendly)
+// Augment the NodeJS Global interface
 declare global {
   namespace NodeJS {
     interface Global {
@@ -51,5 +51,5 @@ export function getPrisma(): PrismaClient {
   return g.__prismaClient!;
 }
 
-// Default export for convenience (so existing imports like `import prisma from "../config/prisma"` still work)
+// Default export for convenience and to prevent early Prisma creation and no longer exports the client object directly (so existing imports like `import prisma from "../config/prisma"` still work)
 export default getPrisma();

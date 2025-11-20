@@ -1,11 +1,9 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.bulkDeleteContracts = exports.deleteContract = exports.updateContract = exports.createContract = exports.getContract = exports.getContracts = void 0;
-const prisma_1 = __importDefault(require("../config/prisma"));
+const prisma_1 = require("../config/prisma");
 const errorHandler_1 = require("../middleware/errorHandler");
+const prisma = (0, prisma_1.getPrisma)();
 const getContracts = async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -18,7 +16,7 @@ const getContracts = async (req, res) => {
             ...(campaignId && { campaignId }),
         };
         const [contracts, total] = await Promise.all([
-            prisma_1.default.contract.findMany({
+            prisma.contract.findMany({
                 where,
                 skip,
                 take: limit,
@@ -40,7 +38,7 @@ const getContracts = async (req, res) => {
                     },
                 },
             }),
-            prisma_1.default.contract.count({ where }),
+            prisma.contract.count({ where }),
         ]);
         const response = {
             data: contracts,
@@ -64,7 +62,7 @@ const getContract = async (req, res) => {
         if (!id) {
             throw new errorHandler_1.AppError("Contract ID is required", 400);
         }
-        const contract = await prisma_1.default.contract.findUnique({
+        const contract = await prisma.contract.findUnique({
             where: { id },
             include: {
                 influencer: true,
@@ -130,7 +128,7 @@ const createContract = async (req, res) => {
             contractData.averageViews = averageViews;
         if (engagementCount)
             contractData.engagementCount = engagementCount;
-        const contract = await prisma_1.default.contract.create({
+        const contract = await prisma.contract.create({
             data: contractData,
             include: {
                 influencer: true,
@@ -138,7 +136,7 @@ const createContract = async (req, res) => {
             },
         });
         // Update influencer status to CONTRACT
-        await prisma_1.default.influencer.update({
+        await prisma.influencer.update({
             where: { id: influencerId },
             data: { status: "CONTRACT" },
         });
@@ -199,7 +197,7 @@ const updateContract = async (req, res) => {
             updateData.averageViews = averageViews;
         if (engagementCount !== undefined)
             updateData.engagementCount = engagementCount;
-        const contract = await prisma_1.default.contract.update({
+        const contract = await prisma.contract.update({
             where: { id },
             data: updateData,
             include: {
@@ -222,7 +220,7 @@ const deleteContract = async (req, res) => {
         if (!id) {
             throw new errorHandler_1.AppError("Contract ID is required", 400);
         }
-        await prisma_1.default.contract.delete({
+        await prisma.contract.delete({
             where: { id },
         });
         res.json({ message: "Contract deleted successfully" });
@@ -239,7 +237,7 @@ const bulkDeleteContracts = async (req, res) => {
         if (!Array.isArray(ids) || ids.length === 0) {
             throw new errorHandler_1.AppError("Invalid contract IDs", 400);
         }
-        const result = await prisma_1.default.contract.deleteMany({
+        const result = await prisma.contract.deleteMany({
             where: {
                 id: { in: ids },
             },

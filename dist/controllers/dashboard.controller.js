@@ -1,31 +1,29 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getRecentActivity = exports.getPipelineData = exports.getDashboardStats = void 0;
-const prisma_1 = __importDefault(require("../config/prisma"));
+const prisma_1 = require("../config/prisma");
 const errorHandler_1 = require("../middleware/errorHandler");
+const prisma = (0, prisma_1.getPrisma)();
 const getDashboardStats = async (_req, res) => {
     try {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const [totalInfluencers, activeContracts, emailsSentToday, ping1Count, ping2Count, ping3Count, contractCount,] = await Promise.all([
-            prisma_1.default.influencer.count(),
-            prisma_1.default.contract.count({
+            prisma.influencer.count(),
+            prisma.contract.count({
                 where: {
                     status: { in: ["ACTIVE", "SIGNED"] },
                 },
             }),
-            prisma_1.default.email.count({
+            prisma.email.count({
                 where: {
                     sentAt: { gte: today },
                 },
             }),
-            prisma_1.default.influencer.count({ where: { status: "PING_1" } }),
-            prisma_1.default.influencer.count({ where: { status: "PING_2" } }),
-            prisma_1.default.influencer.count({ where: { status: "PING_3" } }),
-            prisma_1.default.influencer.count({ where: { status: "CONTRACT" } }),
+            prisma.influencer.count({ where: { status: "PING_1" } }),
+            prisma.influencer.count({ where: { status: "PING_2" } }),
+            prisma.influencer.count({ where: { status: "PING_3" } }),
+            prisma.influencer.count({ where: { status: "CONTRACT" } }),
         ]);
         const stats = {
             totalInfluencers,
@@ -47,7 +45,7 @@ const getDashboardStats = async (_req, res) => {
 exports.getDashboardStats = getDashboardStats;
 const getPipelineData = async (_req, res) => {
     try {
-        const pipeline = await prisma_1.default.influencer.groupBy({
+        const pipeline = await prisma.influencer.groupBy({
             by: ["status"],
             _count: true,
         });
@@ -65,7 +63,7 @@ exports.getPipelineData = getPipelineData;
 const getRecentActivity = async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 10;
-        const activities = await prisma_1.default.auditLog.findMany({
+        const activities = await prisma.auditLog.findMany({
             take: limit,
             orderBy: { createdAt: "desc" },
             include: {

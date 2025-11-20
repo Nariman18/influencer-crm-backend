@@ -47,7 +47,7 @@ export const looksLikeDM = (s: string | null | undefined): boolean => {
 
   for (const m of markers) {
     if (v === m) return true;
-    if (v.includes(m)) return true;
+    if (v.includes(m!)) return true;
   }
 
   if (/(\(|\)|\/|\\)/.test(v) && /dm/.test(v)) return true;

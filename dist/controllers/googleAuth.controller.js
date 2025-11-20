@@ -1,13 +1,11 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.disconnectGoogleAccount = exports.connectGoogleAccount = exports.exchangeGoogleToken = void 0;
 const googleapis_1 = require("googleapis");
-const prisma_1 = __importDefault(require("../config/prisma"));
+const prisma_1 = require("../config/prisma");
 const errorHandler_1 = require("../middleware/errorHandler");
 const OAuth2 = googleapis_1.google.auth.OAuth2;
+const prisma = (0, prisma_1.getPrisma)();
 /**
  * Enhanced token exchange with better error handling
  */
@@ -115,7 +113,7 @@ const connectGoogleAccount = async (req, res) => {
             throw new errorHandler_1.AppError("Google tokens are invalid. Please reconnect your Google account.", 400);
         }
         // Update user with validated tokens**
-        const updatedUser = await prisma_1.default.user.update({
+        const updatedUser = await prisma.user.update({
             where: { id: req.user.id },
             data: {
                 googleAccessToken: accessToken,
@@ -158,7 +156,7 @@ const disconnectGoogleAccount = async (req, res) => {
             throw new errorHandler_1.AppError("Not authenticated", 401);
         }
         console.log("Disconnecting Google account for user:", req.user.id);
-        await prisma_1.default.user.update({
+        await prisma.user.update({
             where: { id: req.user.id },
             data: {
                 googleAccessToken: null,

@@ -5,8 +5,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 // routes/webhooks.ts
 const express_1 = __importDefault(require("express"));
-const prisma_1 = __importDefault(require("../config/prisma"));
+const prisma_1 = require("../config/prisma");
 const router = express_1.default.Router();
+const prisma = (0, prisma_1.getPrisma)();
 router.post("/mailgun", express_1.default.json(), async (req, res) => {
     try {
         // Mailgun may send different payload shapes; typical: event-data object
@@ -26,13 +27,13 @@ router.post("/mailgun", express_1.default.json(), async (req, res) => {
         }
         // map events
         if (event === "delivered") {
-            await prisma_1.default.email.update({
+            await prisma.email.update({
                 where: { id: emailId },
                 data: { status: "SENT" },
             });
         }
         else if (event === "failed" || event === "bounced") {
-            await prisma_1.default.email.update({
+            await prisma.email.update({
                 where: { id: emailId },
                 data: {
                     status: "FAILED",
@@ -41,7 +42,7 @@ router.post("/mailgun", express_1.default.json(), async (req, res) => {
             });
         }
         else if (event === "opened") {
-            await prisma_1.default.email.update({
+            await prisma.email.update({
                 where: { id: emailId },
                 data: { openedAt: new Date(), status: "OPENED" },
             });

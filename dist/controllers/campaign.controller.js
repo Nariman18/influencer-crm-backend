@@ -1,11 +1,9 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.removeInfluencerFromCampaign = exports.addInfluencerToCampaign = exports.deleteCampaign = exports.updateCampaign = exports.createCampaign = exports.getCampaign = exports.getCampaigns = void 0;
-const prisma_1 = __importDefault(require("../config/prisma"));
 const errorHandler_1 = require("../middleware/errorHandler");
+const prisma_1 = require("../config/prisma");
+const prisma = (0, prisma_1.getPrisma)();
 const getCampaigns = async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -20,7 +18,7 @@ const getCampaigns = async (req, res) => {
             ...(isActive !== undefined && { isActive }),
         };
         const [campaigns, total] = await Promise.all([
-            prisma_1.default.campaign.findMany({
+            prisma.campaign.findMany({
                 where,
                 skip,
                 take: limit,
@@ -41,7 +39,7 @@ const getCampaigns = async (req, res) => {
                     },
                 },
             }),
-            prisma_1.default.campaign.count({ where }),
+            prisma.campaign.count({ where }),
         ]);
         const response = {
             data: campaigns,
@@ -62,7 +60,7 @@ exports.getCampaigns = getCampaigns;
 const getCampaign = async (req, res) => {
     try {
         const { id } = req.params;
-        const campaign = await prisma_1.default.campaign.findUnique({
+        const campaign = await prisma.campaign.findUnique({
             where: { id },
             include: {
                 createdBy: {
@@ -102,7 +100,7 @@ const createCampaign = async (req, res) => {
             throw new errorHandler_1.AppError("Not authenticated", 401);
         }
         const { name, description, budget, startDate, endDate } = req.body;
-        const campaign = await prisma_1.default.campaign.create({
+        const campaign = await prisma.campaign.create({
             data: {
                 name,
                 description,
@@ -144,7 +142,7 @@ const updateCampaign = async (req, res) => {
             updateData.startDate = new Date(startDate);
         if (endDate)
             updateData.endDate = new Date(endDate);
-        const campaign = await prisma_1.default.campaign.update({
+        const campaign = await prisma.campaign.update({
             where: { id },
             data: updateData,
             include: {
@@ -169,7 +167,7 @@ exports.updateCampaign = updateCampaign;
 const deleteCampaign = async (req, res) => {
     try {
         const { id } = req.params;
-        await prisma_1.default.campaign.delete({
+        await prisma.campaign.delete({
             where: { id },
         });
         res.json({ message: "Campaign deleted successfully" });
@@ -190,7 +188,7 @@ const addInfluencerToCampaign = async (req, res) => {
         if (!influencerId) {
             throw new errorHandler_1.AppError("Influencer ID is required", 400);
         }
-        const existing = await prisma_1.default.campaignInfluencer.findFirst({
+        const existing = await prisma.campaignInfluencer.findFirst({
             where: {
                 campaignId: id,
                 influencerId,
@@ -204,7 +202,7 @@ const addInfluencerToCampaign = async (req, res) => {
             campaignId: id,
             influencerId: influencerId,
         };
-        const campaignInfluencer = await prisma_1.default.campaignInfluencer.create({
+        const campaignInfluencer = await prisma.campaignInfluencer.create({
             data: campaignInfluencerData,
             include: {
                 influencer: true,
@@ -226,7 +224,7 @@ const removeInfluencerFromCampaign = async (req, res) => {
         if (!id || !influencerId) {
             throw new errorHandler_1.AppError("Campaign ID and Influencer ID are required", 400);
         }
-        await prisma_1.default.campaignInfluencer.deleteMany({
+        await prisma.campaignInfluencer.deleteMany({
             where: {
                 campaignId: id,
                 influencerId,

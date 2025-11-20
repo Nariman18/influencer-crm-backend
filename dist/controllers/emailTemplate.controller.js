@@ -1,11 +1,9 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteEmailTemplate = exports.updateEmailTemplate = exports.createEmailTemplate = exports.getEmailTemplate = exports.getEmailTemplates = void 0;
-const prisma_1 = __importDefault(require("../config/prisma"));
+const prisma_1 = require("../config/prisma");
 const errorHandler_1 = require("../middleware/errorHandler");
+const prisma = (0, prisma_1.getPrisma)();
 const getEmailTemplates = async (req, res) => {
     try {
         const isActive = req.query.isActive === "true"
@@ -13,7 +11,7 @@ const getEmailTemplates = async (req, res) => {
             : req.query.isActive === "false"
                 ? false
                 : undefined;
-        const templates = await prisma_1.default.emailTemplate.findMany({
+        const templates = await prisma.emailTemplate.findMany({
             where: {
                 ...(isActive !== undefined && { isActive }),
             },
@@ -29,7 +27,7 @@ exports.getEmailTemplates = getEmailTemplates;
 const getEmailTemplate = async (req, res) => {
     try {
         const { id } = req.params;
-        const template = await prisma_1.default.emailTemplate.findUnique({
+        const template = await prisma.emailTemplate.findUnique({
             where: { id },
         });
         if (!template) {
@@ -47,7 +45,7 @@ exports.getEmailTemplate = getEmailTemplate;
 const createEmailTemplate = async (req, res) => {
     try {
         const { name, subject, body, variables } = req.body;
-        const template = await prisma_1.default.emailTemplate.create({
+        const template = await prisma.emailTemplate.create({
             data: {
                 name,
                 subject,
@@ -66,7 +64,7 @@ const updateEmailTemplate = async (req, res) => {
     try {
         const { id } = req.params;
         const { name, subject, body, variables, isActive } = req.body;
-        const template = await prisma_1.default.emailTemplate.update({
+        const template = await prisma.emailTemplate.update({
             where: { id },
             data: {
                 name,
@@ -88,7 +86,7 @@ exports.updateEmailTemplate = updateEmailTemplate;
 const deleteEmailTemplate = async (req, res) => {
     try {
         const { id } = req.params;
-        await prisma_1.default.emailTemplate.delete({
+        await prisma.emailTemplate.delete({
             where: { id },
         });
         res.json({ message: "Email template deleted successfully" });

@@ -1,23 +1,124 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.checkForReplyAndHandle = void 0;
 // src/lib/followup-service.ts
-const prisma_1 = __importDefault(require("../config/prisma"));
+const prisma_1 = require("../config/prisma");
 const googleapis_1 = require("googleapis");
 const redis_queue_1 = require("./redis-queue");
 const client_1 = require("@prisma/client");
+const email_wrap_body_1 = require("./email-wrap-body");
+const prisma = (0, prisma_1.getPrisma)();
 const OAuth2 = googleapis_1.google.auth.OAuth2;
 const TEMPLATE_24H = process.env.FOLLOWUP_TEMPLATE_24H || "24-Hour Reminder";
 const TEMPLATE_48H = process.env.FOLLOWUP_TEMPLATE_48H || "48-Hour Reminder";
 /**
- * jobData expected: { influencerId, emailRecordId, step, userId }
+ * Helper: ensure OAuth2 client tokens are valid (refresh when needed).
+ * Accepts both older and some newer googleapis method names (defensive).
  */
+const ensureValidGoogleClient = async (user, oauth2Client) => {
+    oauth2Client.setCredentials({
+        access_token: user.googleAccessToken,
+        refresh_token: user.googleRefreshToken,
+    });
+    try {
+        if (user.googleAccessToken) {
+            // tokenInfo will throw if token invalid/expired
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            await oauth2Client.getTokenInfo(user.googleAccessToken);
+            return;
+        }
+    }
+    catch (err) {
+        // try to refresh - try both older and newer API forms
+        try {
+            // older googleapis had refreshAccessToken()
+            if (typeof oauth2Client.refreshAccessToken === "function") {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                const { credentials } = await oauth2Client.refreshAccessToken();
+                oauth2Client.setCredentials(credentials);
+                return credentials;
+            }
+            else if (typeof oauth2Client.refreshToken === "function") {
+                // some environments / versions expose refreshToken()
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                const credentials = await oauth2Client.refreshToken(oauth2Client.credentials.refresh_token);
+                oauth2Client.setCredentials(credentials);
+                return credentials;
+            }
+            else if (typeof oauth2Client.getAccessToken === "function") {
+                // last resort, trigger getAccessToken which may refresh
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                const maybe = await oauth2Client.getAccessToken();
+                if (maybe && maybe.token) {
+                    oauth2Client.setCredentials({ access_token: maybe.token });
+                    return maybe;
+                }
+            }
+            // if none available, throw to caller to fallback
+            throw new Error("No refresh method available on oauth2 client");
+        }
+        catch (refreshErr) {
+            throw refreshErr;
+        }
+    }
+};
+/**
+ * Normalize Message-ID value: remove angle brackets and whitespace
+ */
+const normalizeMessageId = (v) => {
+    if (!v || typeof v !== "string")
+        return null;
+    return v.replace(/[<>\s]/g, "").trim() || null;
+};
+/**
+ * Check candidate Gmail message headers to determine whether it is a reply to the original message.
+ */
+const isReplyToOriginal = (candidateHeaders, originalMidNoAngle, influencerEmail, userGmailAddress, sentAt, afterBufferSeconds = 30) => {
+    const hdr = (key) => candidateHeaders[key.toLowerCase()] || candidateHeaders[key] || undefined;
+    // header values of interest
+    const from = (hdr("From") || "").toLowerCase();
+    const to = (hdr("To") || hdr("Delivered-To") || "").toLowerCase();
+    const inReplyTo = (hdr("In-Reply-To") || "").trim();
+    const references = (hdr("References") || "").trim();
+    const msgid = normalizeMessageId(hdr("Message-ID") || hdr("Message-Id"));
+    // If we have original message-id, check In-Reply-To/References for inclusion
+    if (originalMidNoAngle) {
+        const inReplyNorm = normalizeMessageId(inReplyTo) || null;
+        if (inReplyTo && inReplyNorm && inReplyNorm.includes(originalMidNoAngle)) {
+            return true;
+        }
+        if (references) {
+            const parts = references.split(/\s+/).map((r) => normalizeMessageId(r));
+            if (parts.some((r) => r && r === originalMidNoAngle))
+                return true;
+        }
+        if (msgid && msgid === originalMidNoAngle) {
+            return true;
+        }
+    }
+    // If message-id matching not available, check From/To/Subject/Time as a fallback:
+    if (influencerEmail && from.includes(influencerEmail.toLowerCase())) {
+        if (userGmailAddress && to.includes(userGmailAddress.toLowerCase())) {
+            if (inReplyTo || references)
+                return true;
+            return true; // last-resort heuristic
+        }
+    }
+    return false;
+};
+const extractHeaders = (msg) => {
+    const headers = {};
+    const parts = msg?.payload?.headers || [];
+    for (const h of parts) {
+        if (!h || !h.name)
+            continue;
+        headers[h.name.toLowerCase()] = h.value;
+    }
+    return headers;
+};
 const checkForReplyAndHandle = async (jobData) => {
     const { influencerId, emailRecordId, step = 1, userId } = jobData;
-    const emailRecord = await prisma_1.default.email.findUnique({
+    const emailRecord = await prisma.email.findUnique({
         where: { id: emailRecordId },
         include: { influencer: true, sentBy: true, template: true },
     });
@@ -25,134 +126,254 @@ const checkForReplyAndHandle = async (jobData) => {
         console.warn("[followup] email record not found, aborting check", emailRecordId);
         return;
     }
-    const user = await prisma_1.default.user.findUnique({ where: { id: userId } });
+    const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
         console.warn("[followup] user record not found, aborting check", userId);
         return;
     }
-    if (emailRecord.status === client_1.EmailStatus.REPLIED)
+    if (emailRecord.status === client_1.EmailStatus.REPLIED) {
+        console.log("[followup] email already marked REPLIED; skipping", emailRecordId);
         return;
-    // Build Gmail query
-    const gmailQueryParts = [];
-    if (emailRecord.influencer?.email) {
-        gmailQueryParts.push(`from:${emailRecord.influencer.email}`);
     }
-    else {
-        return await handleNoReplyFallback(jobData);
-    }
-    const subjectSnippet = (emailRecord.subject || "").replace(/"/g, "");
-    gmailQueryParts.push(`subject:("${subjectSnippet}" OR "Re: ${subjectSnippet}" OR "re: ${subjectSnippet}")`);
+    const mailgunMessageIdNormalized = emailRecord.mailgunMessageIdNormalized ||
+        normalizeMessageId(emailRecord.mailgunMessageId) ||
+        normalizeMessageId(emailRecord.mailgunId) ||
+        null;
+    const influencerEmail = emailRecord.influencer?.email || null;
+    const userGmailAddress = user.googleEmail || user.email || null;
+    const afterEpochBufferSec = 30;
+    let afterEpoch = null;
     if (emailRecord.sentAt) {
-        const afterEpoch = Math.floor(emailRecord.sentAt.getTime() / 1000);
-        gmailQueryParts.push(`after:${afterEpoch}`);
+        afterEpoch =
+            Math.floor(emailRecord.sentAt.getTime() / 1000) - afterEpochBufferSec;
     }
-    const q = gmailQueryParts.join(" ");
     if (!user.googleAccessToken || !user.googleRefreshToken) {
-        console.warn("User has no Google tokens; skipping reply check for", user.id);
+        console.warn("[followup] user has no google tokens; cannot check replies for user", userId);
         return await handleNoReplyFallback(jobData);
     }
     const oauth2Client = new OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
-    oauth2Client.setCredentials({
-        access_token: user.googleAccessToken,
-        refresh_token: user.googleRefreshToken,
-    });
     try {
-        await oauth2Client.getTokenInfo(user.googleAccessToken);
-    }
-    catch (err) {
-        try {
-            const { credentials } = await oauth2Client.refreshAccessToken();
-            await prisma_1.default.user.update({
-                where: { id: userId },
-                data: {
-                    googleAccessToken: credentials.access_token,
-                    ...(credentials.refresh_token && {
-                        googleRefreshToken: credentials.refresh_token,
-                    }),
-                },
-            });
-            oauth2Client.setCredentials(credentials);
-        }
-        catch (refreshErr) {
-            console.error("Failed to refresh Google token:", refreshErr);
-            return await handleNoReplyFallback(jobData);
-        }
-    }
-    const gmail = googleapis_1.google.gmail({ version: "v1", auth: oauth2Client });
-    try {
-        const resp = await gmail.users.messages.list({
-            userId: "me",
-            q,
-            maxResults: 10,
+        oauth2Client.setCredentials({
+            access_token: user.googleAccessToken,
+            refresh_token: user.googleRefreshToken,
         });
-        const messages = resp.data.messages || [];
-        if (messages.length > 0) {
-            // Found reply(s)
-            const msg = await gmail.users.messages.get({
-                userId: "me",
-                id: messages[0].id,
-            });
-            const internalDate = Number(msg.data.internalDate || Date.now());
-            const repliedAt = new Date(internalDate);
-            try {
-                await prisma_1.default.email.update({
-                    where: { id: emailRecordId },
-                    data: {
-                        status: client_1.EmailStatus.REPLIED,
-                        repliedAt,
-                    },
-                });
-            }
-            catch (e) {
-                console.warn("[followup] failed to update email status to REPLIED:", emailRecordId, e);
-            }
-            try {
-                await prisma_1.default.influencer.update({
-                    where: { id: influencerId },
-                    data: { status: client_1.InfluencerStatus.NOT_SENT },
-                });
-            }
-            catch (e) {
-                console.warn("[followup] failed to reset influencer status:", e);
-            }
-            // Cancel scheduled follow-up (if present)
-            if (emailRecord.scheduledJobId) {
-                try {
-                    await redis_queue_1.followUpQueue.remove(emailRecord.scheduledJobId);
-                }
-                catch (e) {
-                    console.warn("Could not remove followup job", emailRecord.scheduledJobId, e);
-                }
-            }
-            return;
+        try {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            await oauth2Client.getTokenInfo(user.googleAccessToken);
         }
-        else {
-            // No replies found
+        catch (tokenErr) {
+            try {
+                await ensureValidGoogleClient(user, oauth2Client);
+                const newCreds = oauth2Client.credentials;
+                if (newCreds?.access_token) {
+                    const updateData = { googleAccessToken: newCreds.access_token };
+                    if (newCreds.refresh_token)
+                        updateData.googleRefreshToken = newCreds.refresh_token;
+                    try {
+                        await prisma.user.update({
+                            where: { id: userId },
+                            data: updateData,
+                        });
+                        console.log("[followup] persisted refreshed google tokens for user:", userId);
+                    }
+                    catch (uErr) {
+                        console.warn("[followup] failed to persist refreshed google tokens:", uErr);
+                    }
+                }
+            }
+            catch (refreshErr) {
+                console.error("[followup] failed to refresh google token:", refreshErr);
+                return await handleNoReplyFallback(jobData);
+            }
+        }
+        const gmail = googleapis_1.google.gmail({ version: "v1", auth: oauth2Client });
+        let queriesTried = [];
+        if (mailgunMessageIdNormalized) {
+            const q = `rfc822msgid:${mailgunMessageIdNormalized}` +
+                (afterEpoch ? ` after:${afterEpoch}` : "");
+            queriesTried.push(q);
+            console.debug("[followup] trying Gmail query (rfc822msgid):", q);
+            try {
+                const listResp = await gmail.users.messages.list({
+                    userId: "me",
+                    q,
+                    maxResults: 25,
+                });
+                const candidates = listResp.data.messages || [];
+                console.log("[followup] Gmail.list (rfc822msgid) resultSizeEstimate:", listResp.data.resultSizeEstimate, "candidates:", candidates.length);
+                if (candidates.length > 0) {
+                    for (const c of candidates) {
+                        try {
+                            const getResp = await gmail.users.messages.get({
+                                userId: "me",
+                                id: c.id,
+                                format: "metadata",
+                            });
+                            const headersMap = extractHeaders(getResp.data);
+                            const valid = isReplyToOriginal(headersMap, mailgunMessageIdNormalized, influencerEmail, userGmailAddress, emailRecord.sentAt || null);
+                            console.debug("[followup] candidate headers (rfc822msgid) checked:", {
+                                candidateId: c.id,
+                                valid,
+                                headersSample: {
+                                    from: headersMap["from"],
+                                    to: headersMap["to"] || headersMap["delivered-to"],
+                                    inReplyTo: headersMap["in-reply-to"],
+                                    references: headersMap["references"],
+                                    messageId: headersMap["message-id"],
+                                },
+                            });
+                            if (valid) {
+                                await markEmailReplied(emailRecordId, influencerId, redis_queue_1.followUpQueue, emailRecord);
+                                return;
+                            }
+                        }
+                        catch (gErr) {
+                            console.warn("[followup] failed to fetch message metadata for candidate", c.id, gErr);
+                        }
+                    }
+                }
+            }
+            catch (listErr) {
+                console.error("[followup] gmail.list (rfc822msgid) failed:", listErr);
+            }
+        }
+        const subjectSnippet = (emailRecord.subject || "")
+            .replace(/"/g, "")
+            .slice(0, 80)
+            .trim();
+        const subjectQuery = subjectSnippet
+            ? `subject:("${subjectSnippet}" OR "Re: ${subjectSnippet}" OR "re: ${subjectSnippet}")`
+            : "";
+        const parts = [
+            influencerEmail ? `from:${influencerEmail}` : "",
+            "in:inbox",
+            userGmailAddress ? `to:${userGmailAddress}` : "",
+            subjectQuery,
+        ].filter(Boolean);
+        if (afterEpoch)
+            parts.push(`after:${afterEpoch}`);
+        const fallbackQuery = parts.join(" ");
+        queriesTried.push(fallbackQuery);
+        console.debug("[followup] trying fallback Gmail query:", fallbackQuery);
+        try {
+            const listResp = await gmail.users.messages.list({
+                userId: "me",
+                q: fallbackQuery,
+                maxResults: 50,
+            });
+            console.log("[followup] Gmail.list (fallback) resultSizeEstimate:", listResp.data.resultSizeEstimate, "candidates:", (listResp.data.messages || []).length);
+            const candidates = listResp.data.messages || [];
+            if (!candidates.length) {
+                console.debug("[followup] no candidate messages found for any query. queriesTried:", queriesTried);
+                return await handleNoReplyFallback(jobData);
+            }
+            for (const c of candidates) {
+                if (!c?.id)
+                    continue;
+                try {
+                    const meta = await gmail.users.messages.get({
+                        userId: "me",
+                        id: c.id,
+                        format: "metadata",
+                    });
+                    const headersMap = extractHeaders(meta.data);
+                    let internalDate = Number(meta.data.internalDate || 0);
+                    if (!internalDate) {
+                        try {
+                            const full = await gmail.users.messages.get({
+                                userId: "me",
+                                id: c.id,
+                            });
+                            internalDate = Number(full.data.internalDate || 0);
+                        }
+                        catch (fullErr) {
+                            console.warn("[followup] failed to fetch full message for internalDate fallback:", c.id, fullErr);
+                        }
+                    }
+                    if (emailRecord.sentAt && internalDate) {
+                        const msgDate = new Date(internalDate);
+                        if (msgDate.getTime() <
+                            emailRecord.sentAt.getTime() - afterEpochBufferSec * 1000) {
+                            console.debug("[followup] skipping candidate older than sentAt:", c.id, msgDate.toISOString());
+                            continue;
+                        }
+                    }
+                    const valid = isReplyToOriginal(headersMap, mailgunMessageIdNormalized, influencerEmail, userGmailAddress, emailRecord.sentAt || null);
+                    console.debug("[followup] fallback candidate checked:", {
+                        candidateId: c.id,
+                        valid,
+                        headersSample: {
+                            from: headersMap["from"],
+                            to: headersMap["to"] || headersMap["delivered-to"],
+                            inReplyTo: headersMap["in-reply-to"],
+                            references: headersMap["references"],
+                            messageId: headersMap["message-id"],
+                        },
+                        internalDate,
+                    });
+                    if (valid) {
+                        await markEmailReplied(emailRecordId, influencerId, redis_queue_1.followUpQueue, emailRecord);
+                        return;
+                    }
+                }
+                catch (cErr) {
+                    console.warn("[followup] failed to inspect candidate:", c.id, cErr);
+                }
+            }
+            console.debug("[followup] examined fallback candidates but none validated as reply. queriesTried:", queriesTried);
+            return await handleNoReplyFallback(jobData);
+        }
+        catch (fallbackErr) {
+            console.error("[followup] gmail.list (fallback) failed:", fallbackErr);
             return await handleNoReplyFallback(jobData);
         }
     }
     catch (err) {
-        console.error("Error checking Gmail for replies:", err);
+        console.error("[followup] unexpected error in reply checking:", err);
         return await handleNoReplyFallback(jobData);
     }
 };
 exports.checkForReplyAndHandle = checkForReplyAndHandle;
-/**
- * No-reply handling:
- * - step=1: send 24H reminder -> schedule step=2
- * - step=2: send 48H reminder -> schedule step=3 (final verification)
- * - step=3: final verification (NO SEND) -> mark influencer REJECTED (do not change email statuses)
- */
+const markEmailReplied = async (emailRecordId, influencerId, followUpQueueRef, emailRecord) => {
+    try {
+        await prisma.email.update({
+            where: { id: emailRecordId },
+            data: { status: client_1.EmailStatus.REPLIED, repliedAt: new Date() },
+        });
+        console.log("[followup] marked email as REPLIED:", emailRecordId);
+    }
+    catch (e) {
+        console.warn("[followup] failed to update email record to REPLIED:", emailRecordId, e);
+    }
+    try {
+        await prisma.influencer.update({
+            where: { id: influencerId },
+            data: { status: client_1.InfluencerStatus.NOT_SENT },
+        });
+        console.log("[followup] reset influencer status to NOT_SENT:", influencerId);
+    }
+    catch (e) {
+        console.warn("[followup] failed to reset influencer status:", e);
+    }
+    if (emailRecord?.scheduledJobId) {
+        try {
+            await followUpQueueRef.remove(emailRecord.scheduledJobId);
+            console.log("[followup] cancelled scheduled follow-up job:", emailRecord.scheduledJobId);
+        }
+        catch (e) {
+            console.warn("[followup] failed to remove scheduled follow-up job:", emailRecord.scheduledJobId, e);
+        }
+    }
+};
 const handleNoReplyFallback = async (jobData) => {
     const { influencerId, emailRecordId, step = 1, userId } = jobData;
     if (step > 3) {
         console.warn("[followup] step beyond expected range, aborting:", step);
         return;
     }
-    // Step 3: final verification (do NOT modify the send-status of historical sent emails)
     if (step === 3) {
         try {
-            await prisma_1.default.influencer.update({
+            await prisma.influencer.update({
                 where: { id: influencerId },
                 data: { status: client_1.InfluencerStatus.REJECTED },
             });
@@ -160,18 +381,17 @@ const handleNoReplyFallback = async (jobData) => {
         catch (e) {
             console.warn("[followup] failed to set influencer to REJECTED:", e);
         }
-        // do NOT set email to FAILED here — keep the send history intact
         return;
     }
     const templateName = step === 1 ? TEMPLATE_24H : TEMPLATE_48H;
-    const nextTemplate = await prisma_1.default.emailTemplate.findFirst({
+    const nextTemplate = await prisma.emailTemplate.findFirst({
         where: { name: templateName, isActive: true },
     });
     const sendDelay = process.env.NODE_ENV === "production"
         ? Number(process.env.PROD_FOLLOWUP_DELAY_MS)
         : Number(process.env.DEV_FOLLOWUP_DELAY_MS);
     if (!nextTemplate) {
-        console.warn("Follow-up template not found:", templateName);
+        console.warn("[followup] Follow-up template not found:", templateName);
         const nextStep = step + 1;
         const nextDelay = step === 1
             ? sendDelay
@@ -183,7 +403,7 @@ const handleNoReplyFallback = async (jobData) => {
         });
         if (emailRecordId) {
             try {
-                await prisma_1.default.email.update({
+                await prisma.email.update({
                     where: { id: emailRecordId },
                     data: { scheduledJobId: String(nextJob.id) },
                 });
@@ -194,11 +414,10 @@ const handleNoReplyFallback = async (jobData) => {
         }
         return;
     }
-    // Prepare personalization and ensure influencer/user exist
-    const influencer = await prisma_1.default.influencer.findUnique({
+    const influencer = await prisma.influencer.findUnique({
         where: { id: influencerId },
     });
-    const user = await prisma_1.default.user.findUnique({ where: { id: userId } });
+    const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!influencer || !user) {
         console.warn("[followup] missing influencer or user; aborting fallback", {
             influencerId,
@@ -212,16 +431,17 @@ const handleNoReplyFallback = async (jobData) => {
     const personalizedBody = nextTemplate.body
         .replace(/{{name}}/g, influencer.name || "")
         .replace(/{{email}}/g, influencer.email || "");
-    // Create follow-up email record
+    const senderAddress = user?.googleEmail || user?.email || process.env.MAILGUN_FROM_EMAIL || "";
+    const wrappedBody = (0, email_wrap_body_1.buildEmailHtml)(personalizedBody, influencer.name || "", senderAddress);
     let newEmail;
     try {
-        newEmail = await prisma_1.default.email.create({
+        newEmail = await prisma.email.create({
             data: {
                 influencerId,
                 templateId: nextTemplate.id,
                 sentById: userId,
                 subject: personalizedSubject,
-                body: personalizedBody,
+                body: wrappedBody,
                 status: client_1.EmailStatus.PENDING,
                 isAutomation: true,
             },
@@ -231,13 +451,12 @@ const handleNoReplyFallback = async (jobData) => {
         console.error("[followup] failed to create follow-up email record:", e);
         return;
     }
-    // Enqueue send (replyTo set so replies are tracked)
     try {
         await redis_queue_1.emailSendQueue.add("send-email", {
             userId,
             to: influencer.email,
             subject: personalizedSubject,
-            body: personalizedBody,
+            body: wrappedBody,
             influencerName: influencer.name,
             emailRecordId: newEmail.id,
             influencerId,
@@ -249,12 +468,10 @@ const handleNoReplyFallback = async (jobData) => {
             influencerId,
             emailRecordId: newEmail.id,
         });
-        // continue to scheduling the next check anyway
     }
-    // Update influencer pipeline to PING_2 or PING_3 now that follow-up has been created/sent
     const nextStatus = step === 1 ? client_1.InfluencerStatus.PING_2 : client_1.InfluencerStatus.PING_3;
     try {
-        await prisma_1.default.influencer.update({
+        await prisma.influencer.update({
             where: { id: influencerId },
             data: { status: nextStatus, lastContactDate: new Date() },
         });
@@ -262,7 +479,6 @@ const handleNoReplyFallback = async (jobData) => {
     catch (e) {
         console.warn("[followup] failed to update influencer status:", e);
     }
-    // Schedule next check: if step=1 -> schedule step=2 after sendDelay; if step=2 -> schedule step=3 after final wait
     try {
         if (step === 1) {
             const nextCheckJob = await redis_queue_1.followUpQueue.add("follow-up-check", { influencerId, emailRecordId: newEmail.id, step: 2, userId }, {
@@ -270,7 +486,7 @@ const handleNoReplyFallback = async (jobData) => {
                 attempts: 3,
                 backoff: { type: "exponential", delay: 10000 },
             });
-            await prisma_1.default.email.update({
+            await prisma.email.update({
                 where: { id: newEmail.id },
                 data: { scheduledJobId: String(nextCheckJob.id) },
             });
@@ -282,7 +498,7 @@ const handleNoReplyFallback = async (jobData) => {
                 attempts: 3,
                 backoff: { type: "exponential", delay: 10000 },
             });
-            await prisma_1.default.email.update({
+            await prisma.email.update({
                 where: { id: newEmail.id },
                 data: { scheduledJobId: String(finalCheckJob.id) },
             });

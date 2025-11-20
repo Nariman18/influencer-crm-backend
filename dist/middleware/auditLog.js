@@ -1,10 +1,8 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.auditLog = void 0;
-const prisma_1 = __importDefault(require("../config/prisma"));
+const prisma_1 = require("../config/prisma");
+const prisma = (0, prisma_1.getPrisma)();
 const auditLog = (action, entity) => {
     return async (req, res, next) => {
         const originalSend = res.json;
@@ -14,7 +12,7 @@ const auditLog = (action, entity) => {
                 const entityId = typeof data === "object" && data !== null && "id" in data
                     ? String(data.id)
                     : undefined;
-                prisma_1.default.auditLog
+                prisma.auditLog
                     .create({
                     data: {
                         userId: req.user.id,

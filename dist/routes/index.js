@@ -13,8 +13,9 @@ const emailTemplate_routes_1 = __importDefault(require("./emailTemplate.routes")
 const email_routes_1 = __importDefault(require("./email.routes"));
 const dashboard_routes_1 = __importDefault(require("./dashboard.routes"));
 const queue_routes_1 = __importDefault(require("./queue.routes"));
-const import_controller_1 = require("../controllers/import.controller");
 const debug_queue_1 = __importDefault(require("./debug-queue"));
+const import_routes_1 = __importDefault(require("./import.routes"));
+const export_routes_1 = __importDefault(require("./export.routes"));
 const router = (0, express_1.Router)();
 router.use("/auth", auth_routes_1.default);
 router.use("/influencers", influencer_routes_1.default);
@@ -24,8 +25,8 @@ router.use("/email-templates", emailTemplate_routes_1.default);
 router.use("/emails", email_routes_1.default);
 router.use("/dashboard", dashboard_routes_1.default);
 router.use("/queue", queue_routes_1.default);
-// Import routes
-router.post("/import/influencers", import_controller_1.ImportController.importInfluencers);
-router.post("/import/influencers/batch", import_controller_1.ImportController.importMultipleFiles);
 router.use("/debug", debug_queue_1.default);
+// Import routes
+router.use("/import", import_routes_1.default);
+router.use("/export", export_routes_1.default);
 exports.default = router;

@@ -1,22 +1,20 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.updateProfile = exports.getProfile = exports.login = exports.register = void 0;
-const prisma_1 = __importDefault(require("../config/prisma"));
 const password_1 = require("../utils/password");
 const jwt_1 = require("../utils/jwt");
 const errorHandler_1 = require("../middleware/errorHandler");
+const prisma_1 = require("../config/prisma");
+const prisma = (0, prisma_1.getPrisma)();
 const register = async (req, res) => {
     try {
         const { email, password, name, role } = req.body;
-        const existingUser = await prisma_1.default.user.findUnique({ where: { email } });
+        const existingUser = await prisma.user.findUnique({ where: { email } });
         if (existingUser) {
             throw new errorHandler_1.AppError("User already exists", 400);
         }
         const hashedPassword = await (0, password_1.hashPassword)(password);
-        const user = await prisma_1.default.user.create({
+        const user = await prisma.user.create({
             data: {
                 email,
                 password: hashedPassword,
@@ -49,7 +47,7 @@ exports.register = register;
 const login = async (req, res) => {
     try {
         const { email, password } = req.body;
-        const user = await prisma_1.default.user.findUnique({ where: { email } });
+        const user = await prisma.user.findUnique({ where: { email } });
         if (!user) {
             throw new errorHandler_1.AppError("Invalid credentials", 401);
         }
@@ -88,7 +86,7 @@ const getProfile = async (req, res) => {
         if (!req.user) {
             throw new errorHandler_1.AppError("Not authenticated", 401);
         }
-        const user = await prisma_1.default.user.findUnique({
+        const user = await prisma.user.findUnique({
             where: { id: req.user.id },
             select: {
                 id: true,
@@ -130,7 +128,7 @@ const updateProfile = async (req, res) => {
             throw new errorHandler_1.AppError("Not authenticated", 401);
         }
         const { name, email } = req.body;
-        const user = await prisma_1.default.user.update({
+        const user = await prisma.user.update({
             where: { id: req.user.id },
             data: { name, email },
             select: {

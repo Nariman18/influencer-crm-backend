@@ -32,21 +32,35 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-// src/worker.ts
-require("dotenv/config");
-// Importing this file instantiates queues, workers & schedulers
+const dotenv_1 = __importDefault(require("dotenv"));
+dotenv_1.default.config({ path: ".env.worker" });
 const redis_queue_1 = __importStar(require("./lib/redis-queue"));
 (async () => {
     try {
         console.log("[worker] starting worker process...");
-        // optional: attach event listeners for logs/monitoring
         (0, redis_queue_1.setupEventListeners)();
+        // --- start import/export workers here ---
+        try {
+            const { startImportWorker } = await Promise.resolve().then(() => __importStar(require("./workers/import.worker")));
+            const { startExportWorker } = await Promise.resolve().then(() => __importStar(require("./workers/export.worker")));
+            const importWorker = startImportWorker();
+            const exportWorker = startExportWorker();
+            console.log("[worker] import/export workers started:", importWorker, exportWorker);
+        }
+        catch (e) {
+            console.warn("[worker] failed to start import/export workers:", e);
+        }
         console.log("[worker] workers & schedulers initialized");
         console.log("[worker] listening for jobs on:");
         console.log("   -", redis_queue_1.default.emailSendQueue.name);
         console.log("   -", redis_queue_1.default.followUpQueue.name);
-        // Keep process alive – Workers do this by default, so nothing else required.
+        console.log("   - influencer-imports");
+        console.log("   - influencer-exports");
+        // Keep process alive; Workers do this by default.
         process.on("SIGINT", () => {
             console.log("[worker] SIGINT received, shutting down...");
             process.exit(0);

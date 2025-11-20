@@ -3,12 +3,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const dotenv_1 = __importDefault(require("dotenv"));
+dotenv_1.default.config({ path: ".env.server" });
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
-const dotenv_1 = __importDefault(require("dotenv"));
+const http_1 = __importDefault(require("http"));
 const routes_1 = __importDefault(require("./routes"));
 const errorHandler_1 = require("./middleware/errorHandler");
-dotenv_1.default.config();
+const socket_1 = require("./lib/socket");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 5001;
 // CORS configuration
@@ -90,12 +92,21 @@ app.get("/api/debug/queue-status", async (_req, res) => {
 });
 // Error handling
 app.use(errorHandler_1.errorHandler);
-// Start server with error handling
-const server = app.listen(PORT, async () => {
+// Create raw HTTP server from express app and attach Socket.IO
+const server = http_1.default.createServer(app);
+try {
+    (0, socket_1.initSocket)(server);
+    console.log("🔌 Socket.IO initialized");
+}
+catch (err) {
+    console.warn("⚠️ Socket.IO initialization failed:", err);
+}
+// Start listening using the http server
+server.listen(PORT, async () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
     console.log(`CORS enabled for origins: ${corsOptions.origin.join(", ")}`);
-    console.log(`Frontend URL: https://influencer-crm-frontend.vercel.app`);
+    console.log(`Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:3000"}`);
 });
 // Handle server errors
 server.on("error", (error) => {
@@ -104,10 +115,22 @@ server.on("error", (error) => {
 // Handle process termination
 process.on("SIGTERM", async () => {
     console.log("SIGTERM received, shutting down queues...");
+    try {
+        server.close();
+    }
+    catch (e) {
+        // ignore
+    }
     process.exit(0);
 });
 process.on("SIGINT", async () => {
     console.log("SIGINT received, shutting down queues...");
+    try {
+        server.close();
+    }
+    catch (e) {
+        // ignore
+    }
     process.exit(0);
 });
 exports.default = app;

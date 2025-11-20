@@ -1,4 +1,3 @@
-// src/workers/import.worker.ts
 import "dotenv/config";
 import { Worker, Job } from "bullmq";
 import ExcelJS from "exceljs";
@@ -39,31 +38,18 @@ const normalizeHeader = (h: any) => {
   }
 };
 
-/**
- * Turn ExcelJS cell values (which may be objects, arrays, formula objects, richText)
- * into a safe primitive (string / number / null). This prevents storing objects
- * directly in the database and causing "[object Object]" in the UI.
- *
- * Notes:
- * - Booleans are coerced to strings ("true" / "false") so the return type stays string|number|null
- * - Arrays of primitives or small objects are joined intelligently (handles {text} or richText segments)
- */
 const normalizeCellValue = (v: any): string | number | null => {
   if (v === null || v === undefined) return null;
-
-  // Primitive handling
   if (typeof v === "string") return v.trim();
   if (typeof v === "number") return v;
   if (typeof v === "boolean") return v ? "true" : "false";
 
   try {
-    // ExcelJS cell-like object with .text (simple case)
     if (v && typeof v === "object") {
       if ("text" in v && typeof v.text === "string") {
         return v.text.trim();
       }
 
-      // ExcelJS richText segments: { richText: [{ text: '...' }, ...] }
       if ("richText" in v && Array.isArray(v.richText)) {
         return (
           v.richText
@@ -75,20 +61,16 @@ const normalizeCellValue = (v: any): string | number | null => {
         );
       }
 
-      // If object has .result (formula object), normalize result
       if ("result" in v) {
         return normalizeCellValue(v.result);
       }
 
-      // Date -> ISO
       if (v instanceof Date) return v.toISOString();
 
-      // Arrays: try to join intelligently.
       if (Array.isArray(v)) {
         const mapped = v
           .map((x) => {
             if (x === null || x === undefined) return "";
-            // if segment-like object
             if (typeof x === "object") {
               if ("text" in x && typeof x.text === "string") return x.text;
               if ("richText" in x && Array.isArray(x.richText)) {
@@ -96,7 +78,6 @@ const normalizeCellValue = (v: any): string | number | null => {
                   .map((s: any) => (s?.text ? String(s.text) : ""))
                   .join("");
               }
-              // fallback to JSON for small objects
               try {
                 const s = JSON.stringify(x);
                 return s && s.length < 500 ? s : "";
@@ -111,13 +92,11 @@ const normalizeCellValue = (v: any): string | number | null => {
         return mapped || null;
       }
 
-      // If object has a useful toString, use it (but avoid "[object Object]")
       if (typeof v.toString === "function") {
         const s = v.toString();
         if (s && s !== "[object Object]") return s.trim();
       }
 
-      // Last resort: JSON stringify small objects
       try {
         const small = JSON.stringify(v);
         if (small && small.length < 500) return small;
@@ -126,17 +105,14 @@ const normalizeCellValue = (v: any): string | number | null => {
       }
     }
   } catch {
-    // swallow
+    // noop
   }
 
   return null;
 };
 
 const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
-  // Create a shallow copy and normalize fields we care about
   const out: any = { ...r };
-
-  // fields we commonly use - coerce them
   const keysToNormalize = [
     "name",
     "email",
@@ -152,7 +128,6 @@ const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
     if (k in out) {
       const raw = (out as any)[k];
       const normalized = normalizeCellValue(raw);
-      // For numeric followers, keep a number if possible
       if (k === "followers" && typeof normalized === "string") {
         const n = Number(normalized.replace(/[^\d]/g, ""));
         (out as any)[k] = Number.isFinite(n) ? n : null;
@@ -162,24 +137,19 @@ const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
     }
   }
 
-  // ensure email is lowercased string (if present)
   if (out.email && typeof out.email === "string") {
     out.email = out.email.trim();
   }
 
-  // ensure instagramHandle is trimmed (strip leading @)
   if (out.instagramHandle && typeof out.instagramHandle === "string") {
     out.instagramHandle = out.instagramHandle.trim().replace(/^@+/, "");
   }
 
-  // If name is an array-like or JSON blob, try to extract a human name string
   if (out.name && typeof out.name === "string") {
-    // In case a JSON string was stored, attempt to parse simple structures
     try {
       if (out.name.startsWith("{") || out.name.startsWith("[")) {
         const parsed = JSON.parse(out.name);
         if (Array.isArray(parsed)) {
-          // try to extract text properties
           const joined = parsed
             .map((p: any) => {
               if (!p) return "";
@@ -195,7 +165,6 @@ const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
             .trim();
           if (joined) out.name = joined;
         } else if (typeof parsed === "object" && parsed !== null) {
-          // try common keys
           const maybe = parsed.text || parsed.name || parsed.value || null;
           if (typeof maybe === "string" && maybe.trim())
             out.name = maybe.trim();
@@ -213,32 +182,24 @@ export const startImportWorker = () => {
   const worker = new Worker(
     QUEUE_NAME,
     async (job: Job<ImportJobData>) => {
-      // SKIP scheduler / noop / repeat jobs that don't contain user payload.
       const jobName = job?.name ?? "";
       const jobId = job?.id;
-      if (jobName && jobName.toString().includes("__scheduler")) {
-        console.log("[import.worker] skipping scheduler/noop job", {
-          jobId,
-          jobName,
-        });
-        return;
-      }
-      if (typeof jobId === "string" && jobId.startsWith("repeat:")) {
-        console.log("[import.worker] skipping repeat scheduler job", { jobId });
-        return;
-      }
+      if (jobName && jobName.toString().includes("__scheduler")) return;
+      if (typeof jobId === "string" && jobId.startsWith("repeat:")) return;
 
-      // Extract data and defensively check required fields
       const { managerId, filePath, importJobId } = job.data || ({} as any);
       if (!importJobId) {
         console.warn(
           "[import.worker] missing importJobId in job data — skipping",
-          { jobId, data: job.data }
+          {
+            jobId,
+            data: job.data,
+          }
         );
         return;
       }
 
-      // If DB record doesn't exist or isn't PENDING, abort early (supports cancel flow)
+      // quick DB sanity check
       try {
         const jobRecord = await prisma.importJob.findUnique({
           where: { id: importJobId },
@@ -259,11 +220,9 @@ export const startImportWorker = () => {
           return;
         }
       } catch (e) {
-        // proceed — we don't want to block processing due to a transient DB read error,
-        // but we already attempted to be defensive.
+        // proceed — defensive
       }
 
-      // socket IO (optional — if not initialized will be null)
       const io = (() => {
         try {
           return getIO();
@@ -272,18 +231,15 @@ export const startImportWorker = () => {
         }
       })();
 
-      // Emit helper — publish to Redis pubsub (for cross-process forwarding)
-      // and also emit directly to local socket.io if available.
       const emit = async (payload: any) => {
         try {
-          // include managerId and jobId in published payload so socket subscriber can target room
           await publishImportProgress(importJobId, {
             managerId,
             jobId: importJobId,
             ...payload,
           }).catch(() => {});
         } catch (e) {
-          // swallow publish errors
+          // swallow
         }
 
         try {
@@ -292,39 +248,175 @@ export const startImportWorker = () => {
             ...payload,
           });
         } catch (e) {
-          // swallow socket errors
+          // swallow
         }
       };
 
+      // -------------------------
+      // PASS 1: VALIDATION (no DB writes)
+      // Ensure every non-empty data row has an instagramHandle.
+      // -------------------------
+      let headers: string[] | null = null;
+      let validationRowIndex = 0;
+      const missingHandles: Array<{ row: number; reason?: string }> = [];
+
+      try {
+        const validationReader = new (
+          ExcelJS as any
+        ).stream.xlsx.WorkbookReader(filePath, {
+          entries: "emit",
+          sharedStrings: "cache",
+          hyperlinks: "emit",
+          worksheets: "emit",
+        });
+
+        for await (const worksheet of validationReader) {
+          for await (const row of worksheet) {
+            const values = (row.values || []) as any[];
+            if (!Array.isArray(values)) continue;
+
+            // detect header row if we don't have headers yet
+            if (!headers) {
+              const rawMaxIndex = Math.max(0, values.length - 1);
+              const SAFE_MAX_COLS = 2000;
+              const maxIndex = Math.min(rawMaxIndex, SAFE_MAX_COLS);
+
+              const hasAnyCell = (() => {
+                for (let i = 1; i <= maxIndex; i++) {
+                  if (
+                    values[i] !== undefined &&
+                    values[i] !== null &&
+                    String(values[i]).trim() !== ""
+                  )
+                    return true;
+                }
+                return false;
+              })();
+
+              if (!hasAnyCell) continue;
+
+              const candidateHeaders: string[] = new Array(maxIndex).fill("");
+              for (let i = 1; i <= maxIndex; i++) {
+                try {
+                  const raw = values[i];
+                  candidateHeaders[i - 1] = normalizeHeader(raw) || "";
+                } catch {
+                  candidateHeaders[i - 1] = "";
+                }
+              }
+
+              const nonEmpty = candidateHeaders.some((h) => !!h);
+              if (!nonEmpty) continue;
+
+              for (let i = 0; i < candidateHeaders.length; i++) {
+                if (!candidateHeaders[i]) candidateHeaders[i] = `col_${i + 1}`;
+              }
+
+              headers = candidateHeaders.map((h) => String(h));
+              headers = headers.map((h) => h.replace(/\s+/g, " ").trim());
+
+              // continue to next row (header row consumed)
+              continue;
+            }
+
+            validationRowIndex++;
+
+            // Build obj mapping header->value
+            const obj: any = {};
+            headers.forEach((h, idx) => {
+              obj[h] = values[idx + 1] ?? null;
+            });
+
+            // Parse and normalize so we can inspect instagramHandle robustly
+            let parsed: ParsedRow;
+            try {
+              parsed = parseRowFromHeaders(headers, values);
+            } catch (e) {
+              missingHandles.push({
+                row: validationRowIndex,
+                reason: `parse error: ${(e as any)?.message ?? String(e)}`,
+              });
+              continue;
+            }
+
+            parsed = normalizeParsedRow(parsed);
+
+            // If DM-only or email-only rows will still require instagramHandle per your requirement
+            if (!parsed.instagramHandle) {
+              missingHandles.push({
+                row: validationRowIndex,
+                reason: "Missing instagram handle",
+              });
+            }
+
+            // only validate first worksheet
+          }
+          break;
+        }
+      } catch (e) {
+        missingHandles.push({
+          row: -1,
+          reason: `validation pass failed: ${String(e)}`,
+        });
+      }
+
+      if (missingHandles.length > 0) {
+        const errEntries = missingHandles.map((m) =>
+          m.row === -1 ? { error: m.reason } : { row: m.row, error: m.reason }
+        );
+
+        try {
+          await prisma.importJob.update({
+            where: { id: importJobId },
+            data: { status: "FAILED", errors: errEntries as any },
+          });
+        } catch (uErr) {
+          console.error(
+            "Failed to mark import job failed after validation:",
+            uErr
+          );
+        }
+
+        await emit({
+          error: "Validation failed: missing instagram handles",
+          failed: true,
+          details: errEntries,
+        });
+
+        try {
+          await fs.promises.unlink(filePath);
+        } catch (e) {
+          // noop
+        }
+
+        return {
+          processed: 0,
+          success: 0,
+          failed: 0,
+          duplicates: [],
+          errors: errEntries,
+        };
+      }
+
+      // -------------------------
+      // PASS 2: PROCESSING (safe to write now)
+      // -------------------------
+
       // mark job processing
-      await prisma.importJob.update({
-        where: { id: importJobId },
-        data: { status: "PROCESSING" },
-      });
+      try {
+        await prisma.importJob.update({
+          where: { id: importJobId },
+          data: { status: "PROCESSING" },
+        });
+      } catch (e) {
+        // proceed
+      }
 
       let processed = 0;
       let success = 0;
       let failed = 0;
       const errors: any[] = [];
       const duplicates: any[] = [];
-
-      // helper: check DB record to see if job was cancelled (status === "FAILED")
-      const checkForCancellation = async (): Promise<boolean> => {
-        try {
-          const j = await prisma.importJob.findUnique({
-            where: { id: importJobId },
-            select: { status: true },
-          });
-          if (!j) return false;
-          if (j.status === "FAILED") {
-            // job was cancelled by user (controller sets status to FAILED)
-            return true;
-          }
-        } catch (e) {
-          // ignore transient errors, do not fail worker because of status check
-        }
-        return false;
-      };
 
       try {
         const workbookReader = new (ExcelJS as any).stream.xlsx.WorkbookReader(
@@ -337,9 +429,8 @@ export const startImportWorker = () => {
           }
         );
 
-        // We'll track headers as an array where index === column index (0-based)
-        // but ExcelJS row.values is 1-based, so we use idx+1 when reading values.
-        let headers: string[] | null = null;
+        // We'll reuse headers detection logic but we already validated so we expect headers to be present similarly
+        headers = null;
         let buffer: ParsedRow[] = [];
         const debugRows: any[] = [];
 
@@ -447,8 +538,6 @@ export const startImportWorker = () => {
         for await (const worksheet of workbookReader) {
           for await (const row of worksheet) {
             const values = (row.values || []) as any[];
-
-            // Defensive: ensure values is an array (ExcelJS sometimes gives sparse objects)
             if (!Array.isArray(values)) continue;
 
             // HEADER DETECTION
@@ -507,13 +596,11 @@ export const startImportWorker = () => {
 
             processed++;
 
-            // Build obj mapping header->value for DM heuristics and debug
             const obj: any = {};
             headers.forEach((h, idx) => {
               obj[h] = values[idx + 1] ?? null;
             });
 
-            // Parse row
             let parsed: ParsedRow;
             try {
               parsed = parseRowFromHeaders(headers, values);
@@ -526,14 +613,12 @@ export const startImportWorker = () => {
               continue;
             }
 
-            // Normalize parsed fields to primitives
             parsed = normalizeParsedRow(parsed);
 
             if (process.env.IMPORT_DEBUG === "true" && debugRows.length < 5) {
               debugRows.push({ row: processed, parsed, raw: obj });
             }
 
-            // For DM detection, normalize the raw email cell value and coerce to string|null
             const rawEmailCellNormalized = normalizeCellValue(
               obj["email"] ?? obj["e-mail"] ?? obj["e_mail"] ?? null
             );
@@ -542,23 +627,28 @@ export const startImportWorker = () => {
                 ? null
                 : String(rawEmailCellNormalized);
 
-            if (!parsed.notes && !parsed.email && looksLikeDM(rawEmailForDM)) {
-              parsed.notes = "Contact is through DM.";
-            } else if (
-              parsed.notes &&
+            // treat explicit DM markers OR an empty email cell (when there's an instagram handle) as DM contact
+            const emailCellEmpty =
+              !rawEmailForDM || String(rawEmailForDM).trim() === "";
+            const looksDM = looksLikeDM(rawEmailForDM);
+            const shouldMarkDM =
               !parsed.email &&
-              looksLikeDM(rawEmailForDM)
-            ) {
+              (looksDM || (emailCellEmpty && !!parsed.instagramHandle));
+
+            if (shouldMarkDM && !parsed.notes) {
+              parsed.notes = "Contact is through DM.";
+            } else if (shouldMarkDM && parsed.notes && !parsed.email) {
               const append = "Contact is through DM.";
               if (!parsed.notes.includes(append))
                 parsed.notes = `${parsed.notes}\n${append}`;
             }
 
-            if (!parsed.email && !parsed.instagramHandle) {
+            // Enforce: instagramHandle must exist (we validated earlier, but guard anyway)
+            if (!parsed.instagramHandle) {
               failed++;
               errors.push({
                 row: processed + 1,
-                error: "Missing email and instagram handle",
+                error: "Missing instagram handle",
               });
               if (processed % STATUS_CHECK_INTERVAL === 0) {
                 await job.updateProgress({ processed, success, failed } as any);
@@ -569,7 +659,18 @@ export const startImportWorker = () => {
                   duplicatesCount: duplicates.length,
                 });
 
-                const cancelled = await checkForCancellation();
+                const cancelled = await (async () => {
+                  try {
+                    const j = await prisma.importJob.findUnique({
+                      where: { id: importJobId },
+                      select: { status: true },
+                    });
+                    return !!j && j.status === "FAILED";
+                  } catch (e) {
+                    return false;
+                  }
+                })();
+
                 if (cancelled) {
                   try {
                     await prisma.importJob.update({
@@ -603,7 +704,18 @@ export const startImportWorker = () => {
                 duplicatesCount: duplicates.length,
               });
 
-              const cancelled = await checkForCancellation();
+              const cancelled = await (async () => {
+                try {
+                  const j = await prisma.importJob.findUnique({
+                    where: { id: importJobId },
+                    select: { status: true },
+                  });
+                  return !!j && j.status === "FAILED";
+                } catch (e) {
+                  return false;
+                }
+              })();
+
               if (cancelled) {
                 try {
                   await prisma.importJob.update({
@@ -701,6 +813,6 @@ export const startImportWorker = () => {
     console.log("[import.worker] job completed", job?.id);
   });
 
-  console.log("[import.worker] started");
+  console.log("[import.worker] started (two-pass validation)");
   return worker;
 };

@@ -237,7 +237,8 @@ model Email {
   scheduledJobId   String?   
   attemptCount     Int            @default(0)
   mailgunId        String?       
-  mailgunMessageId String?       
+  mailgunMessageId String?     
+  mailgunMessageIdNormalized String?  
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
 

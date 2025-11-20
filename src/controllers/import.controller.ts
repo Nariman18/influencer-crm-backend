@@ -29,6 +29,11 @@ export const ImportController = {
     upload.single("file"),
     async (req: AuthRequest, res: Response) => {
       try {
+        console.log("[IMPORT] headers:", {
+          authorization: req.headers.authorization,
+          cookies: req.headers.cookie,
+        });
+        console.log("[IMPORT] req.user present:", !!req.user);
         if (!req.user?.id) throw new AppError("Not authenticated", 401);
         const file = (req as any).file as Express.Multer.File | undefined;
         if (!file) throw new AppError("File required", 400);

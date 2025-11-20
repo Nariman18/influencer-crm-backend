@@ -3,8 +3,10 @@ dotenv.config({ path: ".env.server" });
 
 import express, { Application, Request, Response } from "express";
 import cors from "cors";
+import http from "http";
 import routes from "./routes";
 import { errorHandler } from "./middleware/errorHandler";
+import { initSocket } from "./lib/socket";
 
 const app: Application = express();
 const PORT = process.env.PORT || 5001;
@@ -69,7 +71,6 @@ app.get("/api/health/detailed", async (_req: Request, res: Response) => {
     res.json({
       status: "ok",
       timestamp: new Date().toISOString(),
-
       environment: process.env.NODE_ENV || "development",
     });
   } catch (error) {
@@ -86,7 +87,6 @@ app.get("/api/debug/queue-status", async (_req: Request, res: Response) => {
   try {
     res.json({
       timestamp: new Date().toISOString(),
-
       environment: process.env.NODE_ENV,
     });
   } catch (error) {
@@ -97,12 +97,24 @@ app.get("/api/debug/queue-status", async (_req: Request, res: Response) => {
 // Error handling
 app.use(errorHandler);
 
-// Start server with error handling
-const server = app.listen(PORT, async () => {
+// Create raw HTTP server from express app and attach Socket.IO
+const server = http.createServer(app);
+
+try {
+  initSocket(server);
+  console.log("🔌 Socket.IO initialized");
+} catch (err) {
+  console.warn("⚠️ Socket.IO initialization failed:", err);
+}
+
+// Start listening using the http server
+server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(`CORS enabled for origins: ${corsOptions.origin.join(", ")}`);
-  console.log(`Frontend URL: https://influencer-crm-frontend.vercel.app`);
+  console.log(
+    `Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:3000"}`
+  );
 });
 
 // Handle server errors
@@ -113,13 +125,21 @@ server.on("error", (error: Error) => {
 // Handle process termination
 process.on("SIGTERM", async () => {
   console.log("SIGTERM received, shutting down queues...");
-
+  try {
+    server.close();
+  } catch (e) {
+    // ignore
+  }
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
   console.log("SIGINT received, shutting down queues...");
-
+  try {
+    server.close();
+  } catch (e) {
+    // ignore
+  }
   process.exit(0);
 });
 

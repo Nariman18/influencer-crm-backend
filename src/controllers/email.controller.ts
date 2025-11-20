@@ -400,6 +400,7 @@ export const sendEmail = async (
       influencerName: influencer.name,
       emailRecordId: email.id,
       influencerId: influencer.id,
+      replyTo: senderAddress,
     });
 
     const queuedEmail = await prisma.email.findUnique({
@@ -518,6 +519,7 @@ export const bulkSendEmails = async (
           influencerName: influencer.name,
           emailRecordId: email.id,
           influencerId: influencer.id,
+          replyTo: senderAddress,
         };
 
         if (startAutomation) {

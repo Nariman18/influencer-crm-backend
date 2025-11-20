@@ -76,5 +76,6 @@ export const sendViaSmtp = async (opts: {
     headers: opts.headers,
   });
 
+  // Return the nodemailer info object — caller (mailgun-client) will inspect info.messageId or info.response
   return { success: true, info };
 };

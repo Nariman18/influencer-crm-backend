@@ -6,7 +6,7 @@ import fs from "fs";
 import path from "path";
 import { getPrisma } from "../config/prisma";
 import { getIO } from "../lib/socket";
-import { connection } from "../lib/import-export-queue";
+import { connection, publishExportProgress } from "../lib/import-export-queue";
 
 const prisma = getPrisma();
 
@@ -54,13 +54,24 @@ export const startExportWorker = () => {
         }
       })();
 
-      const emit = (payload: any) => {
+      const emit = async (payload: any) => {
+        try {
+          await publishExportProgress(exportJobId, {
+            managerId,
+            jobId: exportJobId,
+            ...payload,
+          }).catch(() => {});
+        } catch (e) {
+          // swallow
+        }
         try {
           io?.to(`manager:${managerId}`).emit("export:progress", {
             jobId: exportJobId,
             ...payload,
           });
-        } catch {}
+        } catch (e) {
+          // swallow
+        }
       };
 
       await prisma.exportJob.update({

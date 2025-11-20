@@ -24,11 +24,9 @@ router.use("/emails", emailRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/queue", queueRoutes);
 
-// Import routes
-router.post("/import/influencers", ImportController.importInfluencers);
-router.post("/import/influencers/batch", ImportController.importMultipleFiles);
 router.use("/debug", debugQueue);
 
+// Import routes
 router.use("/import", importRoutes);
 router.use("/export", exportRoutes);
 

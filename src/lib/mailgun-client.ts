@@ -56,8 +56,10 @@ const buildFrom = () => {
 
 type SendResult = {
   success: boolean;
-  id?: string;
-  messageId?: string;
+  id?: string; // raw Mailgun id (may include angle brackets)
+  messageId?: string; // same as id (for compatibility)
+  messageIdNormalized?: string; // id normalized (no angle brackets)
+  message?: string; // Mailgun response message e.g. "Queued. Thank you."
   error?: string;
 };
 
@@ -102,8 +104,17 @@ export const sendMailgunEmail = async (opts: {
           from: fromHeader,
         });
         const smtpMessageId =
-          smtpRes?.info?.messageId || smtpRes?.info?.response;
-        return { success: true, id: smtpMessageId, messageId: smtpMessageId };
+          smtpRes?.info?.messageId || smtpRes?.info?.response || undefined;
+        const smtpNormalized =
+          typeof smtpMessageId === "string"
+            ? smtpMessageId.replace(/[<>]/g, "").trim()
+            : undefined;
+        return {
+          success: true,
+          id: smtpMessageId,
+          messageId: smtpMessageId,
+          messageIdNormalized: smtpNormalized,
+        };
       } catch (smtpErr: any) {
         return {
           success: false,
@@ -142,10 +153,17 @@ export const sendMailgunEmail = async (opts: {
       timeout: 20000,
     });
 
+    // Mailgun usually returns: { id: "<...>", message: "Queued. Thank you." }
+    const rawId = res.data?.id || res.data?.messageId || undefined;
+    const normalizedId =
+      typeof rawId === "string" ? rawId.replace(/[<>]/g, "").trim() : undefined;
+
     return {
       success: true,
-      id: res.data?.id || undefined,
-      messageId: res.data?.message || undefined,
+      id: rawId,
+      messageId: rawId,
+      messageIdNormalized: normalizedId,
+      message: res.data?.message || undefined,
     };
   } catch (err: any) {
     const responseData = err?.response?.data;
@@ -182,12 +200,21 @@ export const sendMailgunEmail = async (opts: {
 
         const smtpMessageId =
           smtpRes?.info?.messageId || smtpRes?.info?.response || undefined;
+        const smtpNormalized =
+          typeof smtpMessageId === "string"
+            ? smtpMessageId.replace(/[<>]/g, "").trim()
+            : undefined;
         console.log("[mailgun-client] SMTP fallback succeeded", {
           to: opts.to,
           smtpMessageId,
         });
 
-        return { success: true, id: smtpMessageId, messageId: smtpMessageId };
+        return {
+          success: true,
+          id: smtpMessageId,
+          messageId: smtpMessageId,
+          messageIdNormalized: smtpNormalized,
+        };
       } catch (smtpErr: any) {
         const smtpErrMsg = smtpErr?.message || String(smtpErr);
         console.error("[mailgun-client] SMTP fallback failed:", smtpErrMsg);

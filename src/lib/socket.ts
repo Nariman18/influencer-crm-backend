@@ -6,8 +6,19 @@ import IORedis from "ioredis";
 let io: IOServer | null = null;
 let subscriber: IORedis | null = null;
 
+/**
+ * Initialize socket.io and a dedicated Redis subscriber that listens for
+ * import/export progress messages and forwards them to manager rooms.
+ *
+ * Workers SHOULD publish to channels:
+ *   import:progress:<jobId>
+ *   export:progress:<jobId>
+ *
+ * And include at least: { managerId, jobId, ...progressFields } as payload.
+ */
 export const initSocket = (server: http.Server) => {
   if (io) return io;
+
   io = new IOServer(server, {
     cors: {
       origin: process.env.FRONTEND_URL || "http://localhost:3000",
@@ -28,13 +39,17 @@ export const initSocket = (server: http.Server) => {
     });
   });
 
-  // create a separate subscriber connection (so we don't interfere with command connection)
+  // create a separate Redis subscriber connection (do not reuse command connection)
   try {
     subscriber = new IORedis(
       process.env.REDIS_URL || "redis://localhost:6379",
-      { maxRetriesPerRequest: null }
+      {
+        maxRetriesPerRequest: null,
+      }
     );
-    // subscribe to pattern channels for import/export progress
+
+    // subscribe to progress patterns
+    // ioredis.psubscribe accepts multiple patterns (variadic)
     subscriber.psubscribe(
       "import:progress:*",
       "export:progress:*",
@@ -52,33 +67,70 @@ export const initSocket = (server: http.Server) => {
 
     subscriber.on("pmessage", (_pattern, channel, message) => {
       try {
-        const payload = JSON.parse(String(message));
-        // payload should include managerId and jobId (we included managerId when publishing)
+        const payload = JSON.parse(String(message) || "{}");
+        // Prefer payload.managerId if present (workers should include it).
         const { managerId, jobId, ...rest } = payload || {};
+
+        const isImport = String(channel).startsWith("import:progress:");
+        const isExport = String(channel).startsWith("export:progress:");
+        const event = isImport
+          ? "import:progress"
+          : isExport
+          ? "export:progress"
+          : "progress";
+
         if (managerId && io) {
           // forward to manager room
-          const event = channel.startsWith("import:")
-            ? "import:progress"
-            : "export:progress";
           io.to(`manager:${managerId}`).emit(event, { jobId, ...rest });
-        } else {
-          // fallback: try to parse jobId from channel if managerId not present
-          const match = String(channel).match(
-            /^(import|export):progress:(.+)$/
-          );
-          const jobIdFromChannel = match ? match[2] : null;
-          const event = channel.startsWith("import:")
-            ? "import:progress"
-            : "export:progress";
-          if (io && jobIdFromChannel) {
-            // broadcast widely (but better if workers include managerId)
-            io.emit(event, { jobId: jobIdFromChannel, ...payload });
-          }
+          return;
+        }
+
+        // Fallback: try to parse jobId from the channel (if worker didn't include managerId)
+        const match = String(channel).match(/^(import|export):progress:(.+)$/);
+        const jobIdFromChannel = match ? match[2] : null;
+
+        if (jobIdFromChannel && io) {
+          // Broadcast only the standardized envelope, not raw payload directly
+          io.emit(event, { jobId: jobIdFromChannel, ...(payload || {}) });
+          return;
+        }
+
+        // As a last resort, if no managerId and no jobId, broadcast raw payload under 'progress' event
+        if (io) {
+          io.emit("progress", payload);
         }
       } catch (e) {
         console.warn("[socket] failed to parse pubsub message:", e);
       }
     });
+
+    // handle Redis error events
+    subscriber.on("error", (err) => {
+      console.warn("[socket] redis subscriber error:", err);
+    });
+
+    // graceful cleanup on process termination
+    const cleanup = async () => {
+      try {
+        if (subscriber) {
+          await subscriber.quit();
+          subscriber = null;
+        }
+      } catch (e) {
+        // ignore
+      }
+      try {
+        if (io) {
+          io.close();
+          io = null;
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+
+    process.on("SIGINT", cleanup);
+    process.on("SIGTERM", cleanup);
   } catch (e) {
     console.warn(
       "[socket] failed to create redis subscriber for progress channels:",

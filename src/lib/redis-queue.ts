@@ -404,6 +404,8 @@ const startWorkers = async () => {
                   sentAt: result.success ? new Date() : undefined,
                   mailgunId: result.id || undefined,
                   mailgunMessageId: result.messageId || undefined,
+                  mailgunMessageIdNormalized:
+                    (result as any).messageIdNormalized || undefined,
                   attemptCount: { increment: 1 } as any,
                   ...(result.success
                     ? {}

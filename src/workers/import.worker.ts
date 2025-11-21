@@ -14,6 +14,7 @@ import {
   mappedToCreateMany,
   ParsedRow,
   looksLikeDM,
+  extractCellText,
 } from "../lib/import-helpers";
 import crypto from "crypto";
 import { getGcsClient } from "../lib/gcs-client";
@@ -58,79 +59,29 @@ const maybeDownloadFromGCS = async (
   return { localPath, downloaded: true };
 };
 
-// Small helper to normalize header values
+// Normalize a header cell using extractCellText (keeps behavior consistent)
 const normalizeHeader = (h: any) => {
   if (h === null || h === undefined) return "";
   try {
-    return String(h)
-      .replace(/\uFEFF/g, "")
-      .trim()
-      .toLowerCase();
+    const txt = String(extractCellText(h) ?? "").replace(/\uFEFF/g, "");
+    return txt.trim().toLowerCase();
   } catch {
-    return "";
+    try {
+      return String(h)
+        .replace(/\uFEFF/g, "")
+        .trim()
+        .toLowerCase();
+    } catch {
+      return "";
+    }
   }
 };
 
-// Simple plain-text extraction (keeps behavior consistent with import-helpers.extractCellText)
-const extractPlainText = (v: any): string => {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "string") {
-    let s = v.trim();
-    if (s.toLowerCase().startsWith("mailto:")) s = s.substring(7).trim();
-    return s;
-  }
-  if (typeof v === "number") return String(v);
-  if (typeof v === "boolean") return v ? "true" : "false";
-  if (v instanceof Date) return v.toISOString();
-
-  if (typeof v === "object") {
-    if ("richText" in v && Array.isArray(v.richText)) {
-      const t = v.richText
-        .map((seg: any) => {
-          if (!seg) return "";
-          if (typeof seg === "string") return seg;
-          if (typeof seg.text === "string") return seg.text;
-          return "";
-        })
-        .join("")
-        .trim();
-      if (t.toLowerCase().startsWith("mailto:")) return t.substring(7).trim();
-      return t;
-    }
-
-    if ("hyperlink" in v) {
-      const hyperlink = String(v.hyperlink || "").trim();
-      if (hyperlink.toLowerCase().startsWith("mailto:"))
-        return hyperlink.substring(7).trim();
-      if ("text" in v && typeof v.text === "string") return v.text.trim();
-    }
-
-    if ("text" in v && typeof v.text === "string") {
-      const t = v.text.trim();
-      if (t.toLowerCase().startsWith("mailto:")) return t.substring(7).trim();
-      return t;
-    }
-
-    if ("result" in v) return extractPlainText(v.result);
-    if (Array.isArray(v)) return v.map((it) => extractPlainText(it)).join(" ");
-
-    if (typeof v.toString === "function") {
-      const s = v.toString();
-      if (s && s !== "[object Object]") {
-        const t = s.trim();
-        if (t.toLowerCase().startsWith("mailto:")) return t.substring(7).trim();
-        return t;
-      }
-    }
-  }
-
-  return "";
-};
-
-const normalizeCellValue = (v: any): string | number | null => {
+// Simple normalization for row cells (uses extractCellText)
+const normalizeCellValueFromRow = (v: any): string | number | null => {
   if (v === null || v === undefined) return null;
   if (typeof v === "number") return v;
-  const plain = extractPlainText(v).trim();
+  const plain = extractCellText(v || "").trim();
   if (!plain) return null;
   const cleaned = plain
     .replace(/[\u200B-\u200D\uFEFF]/g, "")
@@ -140,69 +91,16 @@ const normalizeCellValue = (v: any): string | number | null => {
   return cleaned || null;
 };
 
-const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
-  const out: any = { ...r };
-  const keysToNormalize = [
-    "name",
-    "email",
-    "instagramHandle",
-    "followers",
-    "notes",
-    "link",
-    "nickname",
-    "contactMethod",
-  ];
-
-  for (const k of keysToNormalize) {
-    if (k in out) {
-      const raw = (out as any)[k];
-      const normalized = normalizeCellValue(raw);
-      if (k === "followers" && typeof normalized === "string") {
-        const n = Number(normalized.replace(/[^\d]/g, ""));
-        (out as any)[k] = Number.isFinite(n) ? n : null;
-      } else {
-        (out as any)[k] = normalized ?? null;
-      }
-    }
-  }
-
-  if (out.email && typeof out.email === "string")
-    out.email = out.email.trim().toLowerCase();
-  if (out.instagramHandle && typeof out.instagramHandle === "string")
-    out.instagramHandle = out.instagramHandle.trim().replace(/^@+/, "");
-
-  // normalize name if it's a JSON-ish string
-  if (out.name && typeof out.name === "string") {
-    try {
-      if (out.name.startsWith("{") || out.name.startsWith("[")) {
-        const parsed = JSON.parse(out.name);
-        if (Array.isArray(parsed)) {
-          const joined = parsed
-            .map((p: any) => {
-              if (!p) return "";
-              if (typeof p === "string") return p;
-              if (typeof p === "object") {
-                if (typeof p.text === "string") return p.text;
-                if (p.richText && Array.isArray(p.richText))
-                  return p.richText.map((s: any) => s?.text || "").join("");
-              }
-              return "";
-            })
-            .join(" ")
-            .trim();
-          if (joined) out.name = joined;
-        } else if (typeof parsed === "object" && parsed !== null) {
-          const maybe = parsed.text || parsed.name || parsed.value || null;
-          if (typeof maybe === "string" && maybe.trim())
-            out.name = maybe.trim();
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  return out as ParsedRow;
+// permissive simple e-mail check (matches import-helpers' logic)
+const looksLikeEmailSimple = (s: string | null | undefined): boolean => {
+  if (!s) return false;
+  const v = String(s).trim();
+  const at = v.indexOf("@");
+  if (at < 1) return false;
+  const after = v.substring(at + 1);
+  if (!after.includes(".")) return false;
+  if (after.endsWith(".")) return false;
+  return true;
 };
 
 export const startImportWorker = () => {
@@ -262,7 +160,7 @@ export const startImportWorker = () => {
           }
         }
 
-        // quick DB sanity check
+        // sanity check importJob in DB
         try {
           const jobRecord = await prisma.importJob.findUnique({
             where: { id: importJobId },
@@ -282,8 +180,8 @@ export const startImportWorker = () => {
             );
             return;
           }
-        } catch (e) {
-          // proceed defensively
+        } catch {
+          // continue defensively
         }
 
         const io = (() => {
@@ -309,7 +207,7 @@ export const startImportWorker = () => {
           } catch {}
         };
 
-        // PASS 1: validation
+        // PASS 1: try to detect header row (but don't write)
         let headers: string[] | null = null;
         let validationRowIndex = 0;
         const validationErrors: Array<{ row: number; reason?: string }> = [];
@@ -324,64 +222,82 @@ export const startImportWorker = () => {
               worksheets: "emit",
             }
           );
+
+          // tokens we expect to see in header row
+          const knownHeaderTokens = [
+            "email",
+            "name",
+            "instagram",
+            "instagram handle",
+            "handle",
+            "link",
+            "url",
+            "followers",
+            "notes",
+            "country",
+          ];
+
           for await (const worksheet of reader) {
+            let headerFound = false;
             for await (const row of worksheet) {
               const values = (row.values || []) as any[];
               if (!Array.isArray(values)) continue;
 
-              if (!headers) {
-                const rawMaxIndex = Math.max(0, values.length - 1);
-                const SAFE_MAX_COLS = 2000;
-                const maxIndex = Math.min(rawMaxIndex, SAFE_MAX_COLS);
+              // compute normalized candidate headers for this row
+              const rawMaxIndex = Math.max(0, values.length - 1);
+              const SAFE_MAX_COLS = 2000;
+              const maxIndex = Math.min(rawMaxIndex, SAFE_MAX_COLS);
 
-                const hasAnyCell = (() => {
-                  for (let i = 1; i <= maxIndex; i++) {
-                    if (
-                      values[i] !== undefined &&
-                      values[i] !== null &&
-                      String(values[i]).trim() !== ""
-                    )
-                      return true;
+              const candidateHeaders: string[] = new Array(maxIndex).fill("");
+              let hasAnyCell = false;
+              for (let i = 1; i <= maxIndex; i++) {
+                const cell = values[i];
+                const h = normalizeHeader(cell);
+                candidateHeaders[i - 1] = h || "";
+                if (
+                  cell !== undefined &&
+                  cell !== null &&
+                  String(extractCellText(cell)).trim() !== ""
+                )
+                  hasAnyCell = true;
+              }
+
+              if (!hasAnyCell) continue;
+
+              // count how many known tokens we find in candidateHeaders
+              const lowered = candidateHeaders.map((h) => h || "");
+              const tokenMatches = knownHeaderTokens.reduce((acc, token) => {
+                for (const ch of lowered) {
+                  if (!ch) continue;
+                  if (ch === token) {
+                    acc++;
+                    break;
                   }
-                  return false;
-                })();
-                if (!hasAnyCell) continue;
-
-                const candidateHeaders: string[] = new Array(maxIndex).fill("");
-                for (let i = 1; i <= maxIndex; i++) {
-                  try {
-                    candidateHeaders[i - 1] = normalizeHeader(values[i]) || "";
-                  } catch {
-                    candidateHeaders[i - 1] = "";
+                  if (ch.includes(token)) {
+                    acc++;
+                    break;
                   }
                 }
-                const nonEmpty = candidateHeaders.some((h) => !!h);
-                if (!nonEmpty) continue;
-                for (let i = 0; i < candidateHeaders.length; i++)
+                return acc;
+              }, 0);
+
+              // heuristics: if we found >=1 token prefer this row as header,
+              // else if first non-empty row and no better candidate after a few rows, fallback.
+              if (tokenMatches >= 1 || !headers) {
+                // ensure every column has a name
+                for (let i = 0; i < candidateHeaders.length; i++) {
                   if (!candidateHeaders[i])
                     candidateHeaders[i] = `col_${i + 1}`;
-                headers = candidateHeaders
-                  .map((h) => String(h))
-                  .map((h) => h.replace(/\s+/g, " ").trim());
-                continue;
+                }
+                headers = candidateHeaders.map((h) =>
+                  String(h).replace(/\s+/g, " ").trim()
+                );
+                headerFound = true;
+                break;
               }
-
-              validationRowIndex++;
-              let parsed: ParsedRow;
-              try {
-                parsed = parseRowFromHeaders(headers, values);
-              } catch (e: any) {
-                validationErrors.push({
-                  row: validationRowIndex,
-                  reason: `parse error: ${e?.message ?? String(e)}`,
-                });
-                continue;
-              }
-
-              // normalize for validation pass (won't write yet)
-              parsed = normalizeParsedRow(parsed);
             }
-            break; // only first worksheet
+            // stop after first worksheet
+            break;
           }
         } catch (e: any) {
           validationErrors.push({
@@ -418,16 +334,16 @@ export const startImportWorker = () => {
             failed: 0,
             duplicates: [],
             errors: errEntries,
-          } as any;
+          };
         }
 
-        // PASS 2: processing
+        // PASS 2: processing rows, batching, DB writes
         try {
           await prisma.importJob.update({
             where: { id: importJobId },
             data: { status: "PROCESSING" },
           });
-        } catch (e) {}
+        } catch {}
 
         let processed = 0;
         let success = 0;
@@ -445,8 +361,10 @@ export const startImportWorker = () => {
               worksheets: "emit",
             }
           );
-          headers = null;
-          let buffer: ParsedRow[] = [];
+
+          // if headers were not found in pass 1, we'll detect them on the fly in pass 2 (first non-empty row)
+          let headersDetected: string[] | null = headers;
+          const buffer: ParsedRow[] = [];
           const debugRows: any[] = [];
 
           const flush = async () => {
@@ -540,7 +458,7 @@ export const startImportWorker = () => {
               }
             }
 
-            buffer = [];
+            buffer.length = 0;
             await job.updateProgress({ processed, success, failed } as any);
             await emit({
               processed,
@@ -555,99 +473,141 @@ export const startImportWorker = () => {
               const values = (row.values || []) as any[];
               if (!Array.isArray(values)) continue;
 
-              if (!headers) {
+              // detect header row on the fly if not already found
+              if (!headersDetected) {
                 const rawMaxIndex = Math.max(0, values.length - 1);
                 const SAFE_MAX_COLS = 2000;
                 const maxIndex = Math.min(rawMaxIndex, SAFE_MAX_COLS);
 
-                const hasAnyCell = (() => {
-                  for (let i = 1; i <= maxIndex; i++) {
-                    if (
-                      values[i] !== undefined &&
-                      values[i] !== null &&
-                      String(values[i]).trim() !== ""
-                    )
-                      return true;
-                  }
-                  return false;
-                })();
-                if (!hasAnyCell) continue;
-
                 const candidateHeaders: string[] = new Array(maxIndex).fill("");
+                let hasAnyCell = false;
                 for (let i = 1; i <= maxIndex; i++) {
-                  try {
-                    candidateHeaders[i - 1] = normalizeHeader(values[i]) || "";
-                  } catch {
-                    candidateHeaders[i - 1] = "";
-                  }
+                  const cell = values[i];
+                  const h = normalizeHeader(cell);
+                  candidateHeaders[i - 1] = h || "";
+                  if (
+                    cell !== undefined &&
+                    cell !== null &&
+                    String(extractCellText(cell)).trim() !== ""
+                  )
+                    hasAnyCell = true;
                 }
-                const nonEmpty = candidateHeaders.some((h) => !!h);
-                if (!nonEmpty) continue;
+                if (!hasAnyCell) continue;
                 for (let i = 0; i < candidateHeaders.length; i++)
                   if (!candidateHeaders[i])
                     candidateHeaders[i] = `col_${i + 1}`;
-                headers = candidateHeaders
-                  .map((h) => String(h))
-                  .map((h) => h.replace(/\s+/g, " ").trim());
-                if (process.env.IMPORT_DEBUG === "true")
-                  try {
-                    console.log(
-                      `[import.worker] detected headers for ${
-                        job.data.filename || jobId
-                      }:`,
-                      headers
-                    );
-                  } catch {}
+                headersDetected = candidateHeaders.map((h) =>
+                  String(h).replace(/\s+/g, " ").trim()
+                );
+                // skip this row (it's header)
                 continue;
               }
 
               processed++;
 
+              // build raw object using 1-based indexing (ExcelJS style)
               const obj: any = {};
-              headers.forEach((h, idx) => {
+              headersDetected.forEach((h, idx) => {
                 obj[h] = values[idx + 1] ?? null;
               });
 
+              // parse with your helper which returns permissive values
               let parsed: ParsedRow;
               try {
-                parsed = parseRowFromHeaders(headers, values);
+                parsed = parseRowFromHeaders(headersDetected, values);
               } catch (e: any) {
                 failed++;
                 errors.push({
                   row: processed + 1,
-                  error: "Failed to parse row: " + (e as any)?.message,
+                  error: "Failed to parse row: " + (e?.message ?? String(e)),
                 });
                 continue;
               }
 
-              parsed = normalizeParsedRow(parsed);
+              // conservative normalization (keep things consistent with import-helpers)
+              const normalized: any = { ...parsed };
+              // normalize a few keys with extractCellText so richText/hyperlink/plain behave same
+              for (const k of [
+                "name",
+                "email",
+                "instagramHandle",
+                "link",
+                "notes",
+              ]) {
+                if (
+                  k in normalized &&
+                  normalized[k] !== null &&
+                  normalized[k] !== undefined
+                ) {
+                  const nv = normalizeCellValueFromRow(normalized[k]);
+                  if (k === "instagramHandle" && typeof nv === "string") {
+                    normalized[k] = nv.replace(/^@+/, "").trim();
+                  } else {
+                    normalized[k] = nv ?? null;
+                  }
+                } else {
+                  normalized[k] = normalized[k] ?? null;
+                }
+              }
+              if (
+                "followers" in normalized &&
+                normalized.followers !== null &&
+                normalized.followers !== undefined
+              ) {
+                if (typeof normalized.followers === "string") {
+                  const digs = normalized.followers.replace(/[^\d]/g, "");
+                  normalized.followers = digs ? parseInt(digs, 10) : null;
+                } else if (typeof normalized.followers !== "number") {
+                  normalized.followers = null;
+                }
+              }
+              if (
+                (!normalized.name || String(normalized.name).trim() === "") &&
+                normalized.instagramHandle
+              ) {
+                normalized.name = normalized.instagramHandle;
+              }
+              parsed = normalized as ParsedRow;
 
+              // debug snapshot
               if (
                 process.env.IMPORT_DEBUG === "true" &&
                 debugRows.length < 10
               ) {
                 debugRows.push({
                   row: processed,
-                  rawEmailCell: obj["email"],
+                  rawRow: values.slice(1, 15), // small sample of raw values
+                  objEmailCell: obj["email"],
                   parsedEmail: parsed.email,
                 });
               }
 
-              // raw email canonical check
-              const rawEmailCellNormalized = normalizeCellValue(
+              // --- important fallback: if parsed.email missing, try raw cell plain-text extraction once more
+              if (!parsed.email) {
+                const rawCandidate =
+                  obj["email"] ?? obj["e-mail"] ?? obj["e_mail"] ?? null;
+                const candidateText = extractCellText(rawCandidate).trim();
+                if (
+                  candidateText &&
+                  looksLikeEmailSimple(candidateText) &&
+                  !looksLikeDM(candidateText.toLowerCase())
+                ) {
+                  parsed.email = candidateText.toLowerCase();
+                }
+              }
+
+              // DM marker logic: use canonical raw cell normalized
+              const rawEmailCanonical = normalizeCellValueFromRow(
                 obj["email"] ?? obj["e-mail"] ?? obj["e_mail"] ?? null
               );
               const rawEmailForDM: string | null =
-                rawEmailCellNormalized === null
-                  ? null
-                  : String(rawEmailCellNormalized);
-
+                rawEmailCanonical === null ? null : String(rawEmailCanonical);
               const emailCellEmpty =
                 !rawEmailForDM || String(rawEmailForDM).trim() === "";
-              const looksDM = looksLikeDM(rawEmailForDM);
+              const looksDMCell = looksLikeDM(rawEmailForDM);
               const shouldMarkDM =
                 !parsed.email &&
-                (looksDM || (emailCellEmpty && !!parsed.instagramHandle));
+                (looksDMCell || (emailCellEmpty && !!parsed.instagramHandle));
 
               if (shouldMarkDM && !parsed.notes)
                 parsed.notes = "Contact is through DM.";
@@ -657,9 +617,11 @@ export const startImportWorker = () => {
                   parsed.notes = `${parsed.notes}\n${append}`;
               }
 
+              // push to batch
               buffer.push(parsed);
               if (buffer.length >= BATCH_SIZE) await flush();
 
+              // periodic progress and cancellation check
               if (processed % STATUS_CHECK_INTERVAL === 0) {
                 await job.updateProgress({ processed, success, failed } as any);
                 await emit({
@@ -710,17 +672,32 @@ export const startImportWorker = () => {
 
           if (buffer.length) await flush();
 
-          if (process.env.IMPORT_DEBUG === "true" && debugRows.length) {
+          // persist debug snapshot to importJob.errors if debug enabled
+          if (
+            process.env.IMPORT_DEBUG === "true" &&
+            (await Promise.resolve(true))
+          ) {
             try {
+              const jobErrPayload = (await Promise.resolve(true))
+                ? { debugRows: [] as any[] }
+                : null;
+              // collect debugRows from above scope if any
+              // (we already filled debugRows variable)
+              // update DB with debug snapshot
+              // NOTE: do not include huge data here
               await prisma.importJob.update({
                 where: { id: importJobId },
                 data: {
-                  errors: [{ debugRows, note: "IMPORT_DEBUG snapshot" }] as any,
+                  errors:
+                    debugRows.length > 0
+                      ? ([{ debugRows, note: "IMPORT_DEBUG snapshot" }] as any)
+                      : undefined,
                 },
               });
             } catch {}
           }
 
+          // final importJob update
           await prisma.importJob.update({
             where: { id: importJobId },
             data: {
@@ -743,7 +720,7 @@ export const startImportWorker = () => {
 
           try {
             if (downloadedTemp) await fs.promises.unlink(localFilePath);
-          } catch (e) {}
+          } catch {}
           return { processed, success, failed, duplicates, errors } as any;
         } catch (err: any) {
           try {
@@ -763,14 +740,15 @@ export const startImportWorker = () => {
           await emit({ error: err?.message ?? String(err), failed: true });
           try {
             if (downloadedTemp) await fs.promises.unlink(localFilePath);
-          } catch (e) {}
+          } catch {}
           throw err;
         }
       } catch (unexpectedErr) {
         console.error("[import.worker] unexpected error:", unexpectedErr);
         try {
-          if (localFilePath && localFilePath.startsWith(os.tmpdir()))
+          if (localFilePath && localFilePath.startsWith(os.tmpdir())) {
             await fs.promises.unlink(localFilePath);
+          }
         } catch {}
         throw unexpectedErr;
       }

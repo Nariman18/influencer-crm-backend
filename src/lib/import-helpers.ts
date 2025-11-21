@@ -22,7 +22,11 @@ export const looksLikeDM = (s: string | null | undefined): boolean => {
   const v = String(s).trim().toLowerCase();
   if (!v) return false;
 
-  const markers = [
+  // If it contains @, it's likely an email, not a DM marker
+  if (v.includes("@")) return false;
+
+  // Exact match markers only (don't use .includes() to avoid false positives)
+  const exactMarkers = [
     "директ",
     "дірект",
     "дм",
@@ -41,14 +45,23 @@ export const looksLikeDM = (s: string | null | undefined): boolean => {
     "-",
     "—",
     "none",
+    "немає",
+    "нет",
+    "ні",
   ];
 
-  for (const m of markers) {
+  for (const m of exactMarkers) {
     if (v === m) return true;
+  }
+
+  // Only check .includes() for longer, unambiguous phrases
+  const phraseMarkers = ["via dm", "instagram dm", "direct message", "no email"];
+  for (const m of phraseMarkers) {
     if (v.includes(m)) return true;
   }
 
-  if (/(\(|\)|\/|\\)/.test(v) && /dm/.test(v)) return true;
+  // Pattern: contains "dm" with special characters around it (not part of email)
+  if (/\bdm\b/.test(v)) return true;
 
   return false;
 };

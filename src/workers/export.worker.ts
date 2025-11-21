@@ -1,4 +1,3 @@
-// src/workers/export.worker.ts
 import "dotenv/config";
 import { Worker, Job } from "bullmq";
 import ExcelJS from "exceljs";

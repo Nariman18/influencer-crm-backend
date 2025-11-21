@@ -125,12 +125,28 @@ export const extractCellText = (v: any): string => {
   return "";
 };
 
+/**
+ * Simple email validation - very permissive.
+ * Returns true if the string contains @ and looks like an email.
+ * Returns false for DM markers, empty values, or clearly non-email text.
+ */
 const emailLooksValid = (s: any): boolean => {
   if (s === null || s === undefined) return false;
   const normalized = extractCellText(s).trim();
   if (!normalized) return false;
+
+  // Skip DM markers
   if (looksLikeDM(normalized.toLowerCase())) return false;
-  return /^\S+@\S+\.\S+$/.test(normalized);
+
+  // Very simple check: must have @ and at least one dot after @
+  // This allows weird characters, unicode, etc.
+  const atIndex = normalized.indexOf("@");
+  if (atIndex < 1) return false; // must have something before @
+  const afterAt = normalized.substring(atIndex + 1);
+  if (!afterAt.includes(".")) return false;
+  if (afterAt.endsWith(".")) return false;
+
+  return true;
 };
 
 export function extractInstagramHandleFromLink(

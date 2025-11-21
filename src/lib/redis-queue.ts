@@ -14,6 +14,7 @@ import IORedis from "ioredis";
 import { getPrisma } from "../config/prisma";
 import { sendMailgunEmail } from "./mailgun-client";
 import { checkForReplyAndHandle } from "./followup-service";
+import { copyToGmailSent } from "./gmail-sent-copy";
 import { EmailStatus, InfluencerStatus } from "@prisma/client";
 
 const prisma = getPrisma();
@@ -430,6 +431,29 @@ const startWorkers = async () => {
               "[emailWorker] send result received but no emailRecordId provided on job; skipping DB persist",
               { jobId: job?.id, result }
             );
+          }
+
+          // Copy sent email to Gmail Sent folder
+          if (result.success && data.userId) {
+            try {
+              const gmailCopyResult = await copyToGmailSent({
+                userId: data.userId,
+                to: data.to,
+                subject: data.subject,
+                htmlBody: data.body,
+                replyTo: data.replyTo,
+              });
+              if (gmailCopyResult.success) {
+                console.log("[emailWorker] Email copied to Gmail Sent folder", {
+                  to: data.to,
+                  gmailMessageId: gmailCopyResult.messageId,
+                });
+              } else {
+                console.warn("[emailWorker] Failed to copy email to Gmail Sent:", gmailCopyResult.error);
+              }
+            } catch (gmailErr) {
+              console.warn("[emailWorker] Error copying to Gmail Sent (non-fatal):", gmailErr);
+            }
           }
 
           // update influencer pipeline if necessary

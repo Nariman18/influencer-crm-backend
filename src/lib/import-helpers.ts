@@ -119,7 +119,10 @@ const extractCellText = (v: any): string => {
 
     // Array of values
     if (Array.isArray(v)) {
-      return v.map((item) => extractCellText(item)).join(" ").trim();
+      return v
+        .map((item) => extractCellText(item))
+        .join(" ")
+        .trim();
     }
 
     // Try toString as last resort
@@ -140,7 +143,6 @@ const extractCellText = (v: any): string => {
 
 const emailLooksValid = (s: any): boolean => {
   if (s === null || s === undefined) return false;
-  // Extract plain text first (handles richText, objects, etc.)
   const normalized = extractCellText(s).trim();
   if (!normalized) return false;
   if (looksLikeDM(normalized.toLowerCase())) return false;
@@ -172,37 +174,37 @@ export function parseRowFromHeaders(
   headers: string[],
   values: any[]
 ): ParsedRow {
+  // defensive: ensure headers is an array and values is the ExcelJS row.values (1-based)
   const headerMap = headers.map((h) =>
     (h || "").toString().trim().toLowerCase()
   );
 
-  const get = (names: string[]) => {
+  // helper: fetch a cell by header name (case-insensitive, allow contains)
+  const getCellByNames = (names: string[]) => {
     for (const nm of names) {
-      const idx = headerMap.findIndex((h) => h === nm || h.includes(nm));
-      if (idx >= 0) {
-        if (Array.isArray(values)) {
-          // values may be 0-based or ExcelJS 1-based
-          if (values.length === headerMap.length) {
-            return values[idx] ?? null;
-          } else {
-            return values[idx + 1] ?? null;
-          }
-        }
-        return null;
+      // exact match first
+      const exactIdx = headerMap.findIndex((h) => h === nm);
+      if (exactIdx >= 0) {
+        // ExcelJS row.values are 1-based
+        return values[exactIdx + 1] ?? null;
+      }
+      // contains fallback
+      const containsIdx = headerMap.findIndex((h) => h.includes(nm));
+      if (containsIdx >= 0) {
+        return values[containsIdx + 1] ?? null;
       }
     }
     return null;
   };
 
-  // IMPORTANT: do NOT stringify rawNickname here. Leave as raw so normalizer can handle objects/arrays.
-  const rawNickname = get([
+  const rawNickname = getCellByNames([
     "nickname",
     "nick",
     "name",
     "full name",
     "fullname",
   ]);
-  const rawLink = get([
+  const rawLink = getCellByNames([
     "link",
     "profile",
     "instagram",
@@ -210,25 +212,35 @@ export function parseRowFromHeaders(
     "profile url",
     "url",
   ]);
-  const rawEmail = get(["email", "e-mail", "e_mail", "mail"]);
-  const rawFollowers = get(["followers", "followers_count", "followers count"]);
-  const rawNotes = get(["notes", "note", "comments", "comment"]);
-  const rawCountry = get(["country", "location", "nation"]);
+  const rawEmail = getCellByNames(["email", "e-mail", "e_mail", "mail"]);
+  const rawFollowers = getCellByNames([
+    "followers",
+    "followers_count",
+    "followers count",
+  ]);
+  const rawNotes = getCellByNames(["notes", "note", "comments", "comment"]);
+  const rawCountry = getCellByNames(["country", "location", "nation"]);
 
+  // normalize and try to detect handle from link or nickname
   const linkStr = rawLink ? String(rawLink).trim() : null;
   let instagramHandle = extractInstagramHandleFromLink(linkStr);
 
   if (!instagramHandle && rawNickname) {
-    // rawNickname might be object/array/richText -> safe String conversion here for handle detection
     const cand = String(rawNickname).trim();
     if (/^[A-Za-z0-9._]{1,30}$/.test(cand)) instagramHandle = cand;
   }
 
-  const email = emailLooksValid(rawEmail)
-    ? extractCellText(rawEmail).trim().toLowerCase()
-    : null;
+  // Use extractCellText to safely get plain text from rawEmail (handles richText/hyperlinks/etc.)
+  const emailCandidate =
+    rawEmail === null || rawEmail === undefined
+      ? null
+      : extractCellText(rawEmail).trim();
+  const email =
+    emailCandidate && emailLooksValid(emailCandidate)
+      ? emailCandidate.toLowerCase()
+      : null;
 
-  // --- FIX: coerce to String for emptiness check to avoid TS comparing incompatible unions ---
+  // followers coercion
   let followersNum: number | null = null;
   if (rawFollowers !== null && rawFollowers !== undefined) {
     const rawFollowersStr = String(rawFollowers).trim();
@@ -238,18 +250,16 @@ export function parseRowFromHeaders(
     }
   }
 
-  // Pass rawNickname through (do not coerce to string). The worker will call normalizeParsedRow()
-  // which will convert object/array/richText into a readable string.
   const name = rawNickname ?? instagramHandle ?? null;
 
-  // Notes handling: keep raw notes (stringify later) but do DM append logic
+  // Notes handling + DM logic
   let notesVal: string | null =
     rawNotes !== null && rawNotes !== undefined
       ? String(rawNotes).trim()
       : null;
   const rawEmailCell =
     rawEmail !== null && rawEmail !== undefined
-      ? String(rawEmail).trim()
+      ? String(extractCellText(rawEmail)).trim()
       : null;
   const considerDM =
     (!email && looksLikeDM(rawEmailCell)) ||

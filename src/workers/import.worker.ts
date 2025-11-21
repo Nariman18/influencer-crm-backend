@@ -769,8 +769,15 @@ export const startImportWorker = () => {
 
               parsed = normalizeParsedRow(parsed);
 
-              if (process.env.IMPORT_DEBUG === "true" && debugRows.length < 5) {
-                debugRows.push({ row: processed, parsed, raw: obj });
+              if (
+                process.env.IMPORT_DEBUG === "true" &&
+                debugRows.length < 10
+              ) {
+                debugRows.push({
+                  row: processed,
+                  rawEmailCell: obj["email"],
+                  parsedEmail: parsed.email,
+                });
               }
 
               // Use normalized plain text for the raw email cell (canonical)

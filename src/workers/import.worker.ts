@@ -21,7 +21,6 @@ import { getGcsClient } from "../lib/gcs-client";
 
 const prisma = getPrisma();
 const storageClient = getGcsClient();
-
 const QUEUE_NAME = "influencer-imports";
 const BATCH_SIZE = Number(process.env.IMPORT_BATCH_SIZE || 500);
 const STATUS_CHECK_INTERVAL = 200; // rows
@@ -42,18 +41,22 @@ const maybeDownloadFromGCS = async (
   filePath?: string | null
 ): Promise<{ localPath: string; downloaded: boolean }> => {
   if (!filePath) throw new Error("filePath missing");
-  if (!filePath.startsWith("gs://"))
+
+  if (!filePath.startsWith("gs://")) {
     return { localPath: filePath, downloaded: false };
+  }
 
   // parse gs://bucket/path...
   const trimmed = filePath.replace(/^gs:\/\//, "");
   const [bucketName, ...rest] = trimmed.split("/");
   const key = rest.join("/");
-  if (!bucketName || !key) throw new Error("Invalid gs:// path: " + filePath);
+
+  if (!bucketName || !key) {
+    throw new Error("Invalid gs:// path: " + filePath);
+  }
 
   const bucket = storageClient.bucket(bucketName);
   const file = bucket.file(key);
-
   const tmpDir = os.tmpdir();
   const tmpName = `import-${Date.now()}-${crypto
     .randomBytes(6)
@@ -62,12 +65,14 @@ const maybeDownloadFromGCS = async (
   const localPath = path.join(tmpDir, tmpName + ext);
 
   await file.download({ destination: localPath });
+
   return { localPath, downloaded: true };
 };
 
-// --- normalizeHeader, normalizeCellValue, normalizeParsedRow --- copy from your original worker
+// --- normalizeHeader, normalizeCellValue, normalizeParsedRow ---
 const normalizeHeader = (h: any) => {
   if (h === null || h === undefined) return "";
+
   try {
     return String(h)
       .replace(/\uFEFF/g, "")
@@ -168,6 +173,7 @@ const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
     if (k in out) {
       const raw = (out as any)[k];
       const normalized = normalizeCellValue(raw);
+
       if (k === "followers" && typeof normalized === "string") {
         const n = Number(normalized.replace(/[^\d]/g, ""));
         (out as any)[k] = Number.isFinite(n) ? n : null;
@@ -196,8 +202,9 @@ const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
               if (typeof p === "string") return p;
               if (typeof p === "object") {
                 if (typeof p.text === "string") return p.text;
-                if (p.richText && Array.isArray(p.richText))
+                if (p.richText && Array.isArray(p.richText)) {
                   return p.richText.map((s: any) => s?.text || "").join("");
+                }
               }
               return "";
             })
@@ -206,8 +213,9 @@ const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
           if (joined) out.name = joined;
         } else if (typeof parsed === "object" && parsed !== null) {
           const maybe = parsed.text || parsed.name || parsed.value || null;
-          if (typeof maybe === "string" && maybe.trim())
+          if (typeof maybe === "string" && maybe.trim()) {
             out.name = maybe.trim();
+          }
         }
       }
     } catch {
@@ -224,6 +232,7 @@ export const startImportWorker = () => {
     async (job: Job<ImportJobData>) => {
       const jobName = job?.name ?? "";
       const jobId = job?.id;
+
       if (jobName && jobName.toString().includes("__scheduler")) return;
       if (typeof jobId === "string" && jobId.startsWith("repeat:")) return;
 
@@ -232,6 +241,7 @@ export const startImportWorker = () => {
         filePath: rawFilePath,
         importJobId,
       } = job.data || ({} as any);
+
       if (!importJobId) {
         console.warn(
           "[import.worker] missing importJobId in job data — skipping",
@@ -243,6 +253,7 @@ export const startImportWorker = () => {
       // Ensure we have a local path to pass to ExcelJS. If gs://, download first.
       let localFilePath = String(rawFilePath || "");
       let downloadedTemp = false;
+
       try {
         if (localFilePath.startsWith("gs://")) {
           try {
@@ -254,6 +265,7 @@ export const startImportWorker = () => {
               "[import.worker] failed to download GCS file:",
               dlErr
             );
+
             // mark job failed in DB and exit
             try {
               await prisma.importJob.update({
@@ -282,6 +294,7 @@ export const startImportWorker = () => {
           const jobRecord = await prisma.importJob.findUnique({
             where: { id: importJobId },
           });
+
           if (!jobRecord) {
             console.warn(
               "[import.worker] importJob record not found — aborting",
@@ -289,6 +302,7 @@ export const startImportWorker = () => {
             );
             return;
           }
+
           if (jobRecord.status !== "PENDING") {
             console.log(
               "[import.worker] job not PENDING (cancelled/processed) — aborting",
@@ -317,6 +331,7 @@ export const startImportWorker = () => {
               ...payload,
             }).catch(() => {});
           } catch {}
+
           try {
             io?.to(`manager:${managerId}`).emit("import:progress", {
               jobId: importJobId,
@@ -390,8 +405,8 @@ export const startImportWorker = () => {
               }
 
               validationRowIndex++;
-
               let parsed: ParsedRow;
+
               try {
                 parsed = parseRowFromHeaders(headers, values);
               } catch (e) {
@@ -424,10 +439,14 @@ export const startImportWorker = () => {
           const errEntries = missingHandles.map((m) =>
             m.row === -1 ? { error: m.reason } : { row: m.row, error: m.reason }
           );
+
           try {
             await prisma.importJob.update({
               where: { id: importJobId },
-              data: { status: "FAILED", errors: errEntries as any },
+              data: {
+                status: "FAILED",
+                errors: errEntries as any,
+              },
             });
           } catch (uErr) {
             console.error(
@@ -441,9 +460,11 @@ export const startImportWorker = () => {
             failed: true,
             details: errEntries,
           });
+
           try {
             if (downloadedTemp) await fs.promises.unlink(localFilePath);
           } catch {}
+
           return {
             processed: 0,
             success: 0,
@@ -495,6 +516,7 @@ export const startImportWorker = () => {
                   .map((s) => s.toLowerCase())
               )
             );
+
             const handles = Array.from(
               new Set(
                 buffer
@@ -515,7 +537,11 @@ export const startImportWorker = () => {
                     : undefined,
                 ].filter(Boolean) as any[],
               },
-              select: { id: true, email: true, instagramHandle: true },
+              select: {
+                id: true,
+                email: true,
+                instagramHandle: true,
+              },
             });
 
             const existingEmails = new Set(
@@ -523,6 +549,7 @@ export const startImportWorker = () => {
                 .map((e) => String(e.email || "").toLowerCase())
                 .filter(Boolean)
             );
+
             const existingHandles = new Set(
               existing
                 .map((e) => String(e.instagramHandle || "").toLowerCase())
@@ -534,14 +561,17 @@ export const startImportWorker = () => {
               const handle = r.instagramHandle
                 ? String(r.instagramHandle).toLowerCase()
                 : null;
+
               if (em && existingEmails.has(em)) {
                 duplicates.push({ email: r.email, handle: r.instagramHandle });
                 return false;
               }
+
               if (handle && existingHandles.has(handle)) {
                 duplicates.push({ handle: r.instagramHandle, email: r.email });
                 return false;
               }
+
               return true;
             });
 
@@ -549,6 +579,7 @@ export const startImportWorker = () => {
               const mapped: Prisma.InfluencerCreateManyInput[] = toInsert.map(
                 (r) => mappedToCreateMany(r, managerId)
               );
+
               try {
                 const res = await prisma.influencer.createMany({
                   data: mapped,
@@ -561,7 +592,9 @@ export const startImportWorker = () => {
               } catch (e: any) {
                 for (const row of mapped) {
                   try {
-                    await prisma.influencer.create({ data: row as any });
+                    await prisma.influencer.create({
+                      data: row as any,
+                    });
                     success++;
                   } catch (innerErr: any) {
                     failed++;
@@ -605,6 +638,7 @@ export const startImportWorker = () => {
                   }
                   return false;
                 })();
+
                 if (!hasAnyCell) continue;
 
                 const candidateHeaders: string[] = new Array(maxIndex).fill("");
@@ -642,7 +676,6 @@ export const startImportWorker = () => {
               }
 
               processed++;
-
               const obj: any = {};
               headers.forEach((h, idx) => {
                 obj[h] = values[idx + 1] ?? null;
@@ -673,7 +706,6 @@ export const startImportWorker = () => {
                 rawEmailCellNormalized === null
                   ? null
                   : String(rawEmailCellNormalized);
-
               const emailCellEmpty =
                 !rawEmailForDM || String(rawEmailForDM).trim() === "";
               const looksDM = looksLikeDM(rawEmailForDM);
@@ -685,8 +717,9 @@ export const startImportWorker = () => {
                 parsed.notes = "Contact is through DM.";
               } else if (shouldMarkDM && parsed.notes && !parsed.email) {
                 const append = "Contact is through DM.";
-                if (!parsed.notes.includes(append))
+                if (!parsed.notes.includes(append)) {
                   parsed.notes = `${parsed.notes}\n${append}`;
+                }
               }
 
               if (!parsed.instagramHandle) {
@@ -695,18 +728,21 @@ export const startImportWorker = () => {
                   row: processed + 1,
                   error: "Missing instagram handle",
                 });
+
                 if (processed % STATUS_CHECK_INTERVAL === 0) {
                   await job.updateProgress({
                     processed,
                     success,
                     failed,
                   } as any);
+
                   await emit({
                     processed,
                     success,
                     failed,
                     duplicatesCount: duplicates.length,
                   });
+
                   const cancelled = await (async () => {
                     try {
                       const j = await prisma.importJob.findUnique({
@@ -718,6 +754,7 @@ export const startImportWorker = () => {
                       return false;
                     }
                   })();
+
                   if (cancelled) {
                     try {
                       await prisma.importJob.update({
@@ -728,11 +765,14 @@ export const startImportWorker = () => {
                         },
                       });
                     } catch {}
+
                     await emit({ error: "Cancelled by user", failed: true });
+
                     try {
                       if (downloadedTemp)
                         await fs.promises.unlink(localFilePath);
                     } catch {}
+
                     return { processed, success, failed, duplicates, errors };
                   }
                 }
@@ -773,10 +813,13 @@ export const startImportWorker = () => {
                       },
                     });
                   } catch {}
+
                   await emit({ error: "Cancelled by user", failed: true });
+
                   try {
                     if (downloadedTemp) await fs.promises.unlink(localFilePath);
                   } catch {}
+
                   return { processed, success, failed, duplicates, errors };
                 }
               }
@@ -820,6 +863,7 @@ export const startImportWorker = () => {
           try {
             if (downloadedTemp) await fs.promises.unlink(localFilePath);
           } catch (e) {}
+
           return { processed, success, failed, duplicates, errors };
         } catch (err: any) {
           try {
@@ -837,20 +881,27 @@ export const startImportWorker = () => {
             );
           }
 
-          await emit({ error: err?.message ?? String(err), failed: true });
+          await emit({
+            error: err?.message ?? String(err),
+            failed: true,
+          });
+
           try {
             if (downloadedTemp) await fs.promises.unlink(localFilePath);
           } catch (e) {}
+
           throw err;
         }
       } catch (unexpectedErr) {
         console.error("[import.worker] unexpected error:", unexpectedErr);
+
         // try to cleanup any temp file if present
         try {
           if (localFilePath && localFilePath.startsWith(os.tmpdir())) {
             await fs.promises.unlink(localFilePath);
           }
         } catch {}
+
         throw unexpectedErr;
       }
     },

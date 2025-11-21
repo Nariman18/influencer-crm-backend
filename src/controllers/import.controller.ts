@@ -10,6 +10,7 @@ import { AppError } from "../middleware/errorHandler";
 import { Storage } from "@google-cloud/storage";
 import crypto from "crypto";
 import { Prisma } from "@prisma/client";
+import { getGcsClient } from "../lib/gcs-client";
 
 const prisma = getPrisma();
 const GCS_BUCKET = process.env.GCS_BUCKET || "influencers-import-storage";
@@ -22,11 +23,7 @@ if (!GCS_BUCKET) {
 
 // Use explicit keyFilename if provided, otherwise use ADC.
 // This avoids crashes in environments where credentials come from VM metadata.
-const storageClient = new Storage(
-  process.env.GOOGLE_APPLICATION_CREDENTIALS
-    ? { keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS }
-    : undefined
-);
+const storageClient = getGcsClient();
 
 /**
  * Use memoryStorage for multer so we can upload directly from buffer to GCS.

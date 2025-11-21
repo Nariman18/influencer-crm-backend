@@ -17,13 +17,10 @@ import {
 } from "../lib/import-helpers";
 import { Storage } from "@google-cloud/storage";
 import crypto from "crypto";
+import { getGcsClient } from "../lib/gcs-client";
 
 const prisma = getPrisma();
-const storage = new Storage(
-  process.env.GOOGLE_APPLICATION_CREDENTIALS
-    ? { keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS }
-    : undefined
-);
+const storageClient = getGcsClient();
 
 const QUEUE_NAME = "influencer-imports";
 const BATCH_SIZE = Number(process.env.IMPORT_BATCH_SIZE || 500);
@@ -54,7 +51,7 @@ const maybeDownloadFromGCS = async (
   const key = rest.join("/");
   if (!bucketName || !key) throw new Error("Invalid gs:// path: " + filePath);
 
-  const bucket = storage.bucket(bucketName);
+  const bucket = storageClient.bucket(bucketName);
   const file = bucket.file(key);
 
   const tmpDir = os.tmpdir();

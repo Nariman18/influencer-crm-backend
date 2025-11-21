@@ -18,6 +18,11 @@
       "*": ["node_modules/*"]
     }
   },
-  "include": ["src/**/*", "scripts/**/*", "test-smtp-send.js"],
+  "include": [
+    "src/**/*",
+    "scripts/**/*",
+    "test-smtp-send.js",
+    "delete-influencers.js"
+  ],
   "exclude": ["node_modules", "dist"]
 }

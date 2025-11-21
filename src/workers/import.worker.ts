@@ -65,7 +65,8 @@ const maybeDownloadFromGCS = async (
   return { localPath, downloaded: true };
 };
 
-// --- normalizeHeader, normalizeCellValue, normalizeParsedRow --- copy from your original worker
+// --- normalizeHeader, normalizeCellValue, normalizeParsedRow ---
+
 const normalizeHeader = (h: any) => {
   if (h === null || h === undefined) return "";
   try {
@@ -79,8 +80,55 @@ const normalizeHeader = (h: any) => {
 };
 
 /**
+ * mathAlnumToAscii
+ * Convert common "fancy" mathematical alphanumeric Unicode characters to ASCII.
+ * This fixes cases like 𝐚𝐧𝐭𝐡𝐢𝐬𝐚𝐫@... where letters are from Mathematical Alphanumeric block.
+ * The function is conservative and maps common contiguous ranges; if a character is
+ * not recognized it is left as-is.
+ */
+const mathAlnumToAscii = (s: string): string => {
+  if (!s) return s;
+  const out: string[] = [];
+  for (const ch of s) {
+    const code = ch.codePointAt(0) || 0;
+    let mapped: string | null = null;
+
+    // MATHEMATICAL BOLD CAPITAL A..Z: U+1D400..U+1D419 => A..Z
+    if (code >= 0x1d400 && code <= 0x1d419) {
+      mapped = String.fromCharCode(0x41 + (code - 0x1d400));
+    }
+    // MATHEMATICAL BOLD SMALL A..Z: U+1D41A..U+1D433 => a..z
+    else if (code >= 0x1d41a && code <= 0x1d433) {
+      mapped = String.fromCharCode(0x61 + (code - 0x1d41a));
+    }
+    // MATHEMATICAL ITALIC CAPITAL A..Z: U+1D434..U+1D44D => A..Z
+    else if (code >= 0x1d434 && code <= 0x1d44d) {
+      mapped = String.fromCharCode(0x41 + (code - 0x1d434));
+    }
+    // MATHEMATICAL BOLD ITALIC SMALL A..Z: U+1D482..U+1D49B (and others)
+    else if (code >= 0x1d44e && code <= 0x1d467) {
+      mapped = String.fromCharCode(0x61 + (code - 0x1d44e));
+    }
+    // MATHEMATICAL BOLD DIGITS U+1D7CE..U+1D7D7 => 0..9
+    else if (code >= 0x1d7ce && code <= 0x1d7d7) {
+      mapped = String.fromCharCode(0x30 + (code - 0x1d7ce));
+    }
+    // MATHEMATICAL DOUBLE-STRUCK CAPITAL A..Z (U+1D538..)
+    else if (code >= 0x1d538 && code <= 0x1d551) {
+      mapped = String.fromCharCode(0x41 + (code - 0x1d538));
+    }
+    // fallback: keep original char
+    out.push(mapped ?? ch);
+  }
+  return out.join("");
+};
+
+/**
  * Extract plain text from any ExcelJS cell value, stripping all formatting
  * (fonts, sizes, colors, etc.) and returning only the text content.
+ *
+ * Additionally normalizes zero-width/control chars and maps "fancy" Unicode
+ * mathematical alphanumerics back to ASCII (mathAlnumToAscii).
  */
 const extractPlainText = (v: any): string => {
   if (v === null || v === undefined) return "";
@@ -90,6 +138,10 @@ const extractPlainText = (v: any): string => {
     if (text.toLowerCase().startsWith("mailto:")) {
       text = text.substring(7);
     }
+    // normalize and transliterate
+    text = text.replace(/[\u200B-\u200D\uFEFF]/g, "");
+    text = text.normalize("NFKC");
+    text = mathAlnumToAscii(text);
     return text;
   }
   if (typeof v === "number") return String(v);
@@ -112,6 +164,9 @@ const extractPlainText = (v: any): string => {
       if (text.toLowerCase().startsWith("mailto:")) {
         text = text.substring(7);
       }
+      text = text.replace(/[\u200B-\u200D\uFEFF]/g, "");
+      text = text.normalize("NFKC");
+      text = mathAlnumToAscii(text);
       return text;
     }
 
@@ -120,11 +175,19 @@ const extractPlainText = (v: any): string => {
       // Try to get email from hyperlink if it's a mailto link
       const hyperlink = String(v.hyperlink || "");
       if (hyperlink.toLowerCase().startsWith("mailto:")) {
-        return hyperlink.substring(7);
+        let out = hyperlink.substring(7);
+        out = out.replace(/[\u200B-\u200D\uFEFF]/g, "");
+        out = out.normalize("NFKC");
+        out = mathAlnumToAscii(out);
+        return out;
       }
       // Otherwise use text property
       if ("text" in v && typeof v.text === "string") {
-        return v.text;
+        let out = v.text;
+        out = out.replace(/[\u200B-\u200D\uFEFF]/g, "");
+        out = out.normalize("NFKC");
+        out = mathAlnumToAscii(out);
+        return out;
       }
     }
 
@@ -134,6 +197,9 @@ const extractPlainText = (v: any): string => {
       if (text.toLowerCase().startsWith("mailto:")) {
         text = text.substring(7);
       }
+      text = text.replace(/[\u200B-\u200D\uFEFF]/g, "");
+      text = text.normalize("NFKC");
+      text = mathAlnumToAscii(text);
       return text;
     }
 
@@ -152,9 +218,17 @@ const extractPlainText = (v: any): string => {
       const s = v.toString();
       if (s && s !== "[object Object]") {
         if (s.toLowerCase().startsWith("mailto:")) {
-          return s.substring(7);
+          let out = s.substring(7);
+          out = out.replace(/[\u200B-\u200D\uFEFF]/g, "");
+          out = out.normalize("NFKC");
+          out = mathAlnumToAscii(out);
+          return out;
         }
-        return s;
+        let out = s;
+        out = out.replace(/[\u200B-\u200D\uFEFF]/g, "");
+        out = out.normalize("NFKC");
+        out = mathAlnumToAscii(out);
+        return out;
       }
     }
   }
@@ -177,7 +251,6 @@ const normalizeCellValue = (v: any): string | number | null => {
   // Clean up any remaining formatting artifacts
   // Remove zero-width characters, control characters, etc.
   const cleaned = plainText
-    .replace(/[\u200B-\u200D\uFEFF]/g, "") // Zero-width characters
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "") // Control characters
     .replace(/\s+/g, " ") // Normalize whitespace
     .trim();
@@ -212,7 +285,7 @@ const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
   }
 
   if (out.email && typeof out.email === "string") {
-    out.email = out.email.trim();
+    out.email = out.email.trim().toLowerCase();
   }
 
   if (out.instagramHandle && typeof out.instagramHandle === "string") {
@@ -427,6 +500,10 @@ export const startImportWorker = () => {
 
               let parsed: ParsedRow;
               try {
+                // IMPORTANT: parseRowFromHeaders expects the same values array shape
+                // ExcelJS provides row.values as 1-based indexing; parseRowFromHeaders
+                // in your import-helpers should also access values[idx+1]. If not,
+                // update parseRowFromHeaders accordingly to avoid off-by-one issues.
                 parsed = parseRowFromHeaders(headers, values);
               } catch (e) {
                 missingHandles.push({
@@ -449,11 +526,9 @@ export const startImportWorker = () => {
         }
 
         // Only fail on critical validation errors, not missing handles
-        const criticalErrors = missingHandles.filter(m => m.row === -1);
+        const criticalErrors = missingHandles.filter((m) => m.row === -1);
         if (criticalErrors.length > 0) {
-          const errEntries = criticalErrors.map((m) =>
-            ({ error: m.reason })
-          );
+          const errEntries = criticalErrors.map((m) => ({ error: m.reason }));
           try {
             await prisma.importJob.update({
               where: { id: importJobId },
@@ -519,19 +594,19 @@ export const startImportWorker = () => {
             const emails = Array.from(
               new Set(
                 buffer
-                  .map((r) => r.email)
+                  .map((r) => (r.email ? String(r.email).toLowerCase() : null))
                   .filter(Boolean)
-                  .map(String)
-                  .map((s) => s.toLowerCase())
               )
             );
             const handles = Array.from(
               new Set(
                 buffer
-                  .map((r) => r.instagramHandle)
+                  .map((r) =>
+                    r.instagramHandle
+                      ? String(r.instagramHandle).toLowerCase()
+                      : null
+                  )
                   .filter(Boolean)
-                  .map(String)
-                  .map((s) => s.toLowerCase())
               )
             );
 
@@ -673,6 +748,7 @@ export const startImportWorker = () => {
 
               processed++;
 
+              // Build obj using 1-based ExcelJS indexing: values[idx + 1]
               const obj: any = {};
               headers.forEach((h, idx) => {
                 obj[h] = values[idx + 1] ?? null;
@@ -680,6 +756,7 @@ export const startImportWorker = () => {
 
               let parsed: ParsedRow;
               try {
+                // IMPORTANT: parseRowFromHeaders should also assume ExcelJS 1-based indexing
                 parsed = parseRowFromHeaders(headers, values);
               } catch (e) {
                 failed++;
@@ -696,6 +773,7 @@ export const startImportWorker = () => {
                 debugRows.push({ row: processed, parsed, raw: obj });
               }
 
+              // Use normalized plain text for the raw email cell (canonical)
               const rawEmailCellNormalized = normalizeCellValue(
                 obj["email"] ?? obj["e-mail"] ?? obj["e_mail"] ?? null
               );
@@ -719,7 +797,7 @@ export const startImportWorker = () => {
                   parsed.notes = `${parsed.notes}\n${append}`;
               }
 
-              // Allow rows with missing instagramHandle - they will be imported with empty handle
+              // Buffer row for batch insert
               buffer.push(parsed);
               if (buffer.length >= BATCH_SIZE) await flush();
 
@@ -849,6 +927,8 @@ export const startImportWorker = () => {
     console.log("[import.worker] job completed", job?.id);
   });
 
-  console.log("[import.worker] started (GCS-aware two-pass validation)");
+  console.log(
+    "[import.worker] started (GCS-aware two-pass validation, improved email normalization)"
+  );
   return worker;
 };

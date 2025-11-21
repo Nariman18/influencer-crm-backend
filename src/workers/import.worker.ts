@@ -15,7 +15,6 @@ import {
   ParsedRow,
   looksLikeDM,
 } from "../lib/import-helpers";
-import { Storage } from "@google-cloud/storage";
 import crypto from "crypto";
 import { getGcsClient } from "../lib/gcs-client";
 
@@ -33,11 +32,6 @@ interface ImportJobData {
   importJobId: string;
 }
 
-/**
- * If filePath is gs://bucket/key then download to a temp local file and return local path.
- * Otherwise return the original path.
- * Caller should delete the returned local path if it's a temp file (ends with .tmp-import-<rand>).
- */
 const maybeDownloadFromGCS = async (
   filePath?: string | null
 ): Promise<{ localPath: string; downloaded: boolean }> => {
@@ -45,7 +39,6 @@ const maybeDownloadFromGCS = async (
   if (!filePath.startsWith("gs://"))
     return { localPath: filePath, downloaded: false };
 
-  // parse gs://bucket/path...
   const trimmed = filePath.replace(/^gs:\/\//, "");
   const [bucketName, ...rest] = trimmed.split("/");
   const key = rest.join("/");
@@ -65,8 +58,7 @@ const maybeDownloadFromGCS = async (
   return { localPath, downloaded: true };
 };
 
-// --- normalizeHeader, normalizeCellValue, normalizeParsedRow ---
-
+// Small helper to normalize header values
 const normalizeHeader = (h: any) => {
   if (h === null || h === undefined) return "";
   try {
@@ -79,156 +71,55 @@ const normalizeHeader = (h: any) => {
   }
 };
 
-/**
- * mathAlnumToAscii
- * Convert common "fancy" mathematical alphanumeric Unicode characters to ASCII.
- * This fixes cases like 𝐚𝐧𝐭𝐡𝐢𝐬𝐚𝐫@... where letters are from Mathematical Alphanumeric block.
- * The function is conservative and maps common contiguous ranges; if a character is
- * not recognized it is left as-is.
- */
-const mathAlnumToAscii = (s: string): string => {
-  if (!s) return s;
-  const out: string[] = [];
-  for (const ch of s) {
-    const code = ch.codePointAt(0) || 0;
-    let mapped: string | null = null;
-
-    // MATHEMATICAL BOLD CAPITAL A..Z: U+1D400..U+1D419 => A..Z
-    if (code >= 0x1d400 && code <= 0x1d419) {
-      mapped = String.fromCharCode(0x41 + (code - 0x1d400));
-    }
-    // MATHEMATICAL BOLD SMALL A..Z: U+1D41A..U+1D433 => a..z
-    else if (code >= 0x1d41a && code <= 0x1d433) {
-      mapped = String.fromCharCode(0x61 + (code - 0x1d41a));
-    }
-    // MATHEMATICAL ITALIC CAPITAL A..Z: U+1D434..U+1D44D => A..Z
-    else if (code >= 0x1d434 && code <= 0x1d44d) {
-      mapped = String.fromCharCode(0x41 + (code - 0x1d434));
-    }
-    // MATHEMATICAL BOLD ITALIC SMALL A..Z: U+1D482..U+1D49B (and others)
-    else if (code >= 0x1d44e && code <= 0x1d467) {
-      mapped = String.fromCharCode(0x61 + (code - 0x1d44e));
-    }
-    // MATHEMATICAL BOLD DIGITS U+1D7CE..U+1D7D7 => 0..9
-    else if (code >= 0x1d7ce && code <= 0x1d7d7) {
-      mapped = String.fromCharCode(0x30 + (code - 0x1d7ce));
-    }
-    // MATHEMATICAL DOUBLE-STRUCK CAPITAL A..Z (U+1D538..)
-    else if (code >= 0x1d538 && code <= 0x1d551) {
-      mapped = String.fromCharCode(0x41 + (code - 0x1d538));
-    }
-    // fallback: keep original char
-    out.push(mapped ?? ch);
-  }
-  return out.join("");
-};
-
-/**
- * Extract plain text from any ExcelJS cell value, stripping all formatting
- * (fonts, sizes, colors, etc.) and returning only the text content.
- *
- * Additionally normalizes zero-width/control chars and maps "fancy" Unicode
- * mathematical alphanumerics back to ASCII (mathAlnumToAscii).
- */
+// Simple plain-text extraction (keeps behavior consistent with import-helpers.extractCellText)
 const extractPlainText = (v: any): string => {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") {
-    // Clean up mailto: prefix
-    let text = v;
-    if (text.toLowerCase().startsWith("mailto:")) {
-      text = text.substring(7);
-    }
-    // normalize and transliterate
-    text = text.replace(/[\u200B-\u200D\uFEFF]/g, "");
-    text = text.normalize("NFKC");
-    text = mathAlnumToAscii(text);
-    return text;
+    let s = v.trim();
+    if (s.toLowerCase().startsWith("mailto:")) s = s.substring(7).trim();
+    return s;
   }
   if (typeof v === "number") return String(v);
   if (typeof v === "boolean") return v ? "true" : "false";
   if (v instanceof Date) return v.toISOString();
 
   if (typeof v === "object") {
-    // ExcelJS richText format: { richText: [{ text: "...", font: {...} }, ...] }
     if ("richText" in v && Array.isArray(v.richText)) {
-      let text = v.richText
+      const t = v.richText
         .map((seg: any) => {
           if (!seg) return "";
-          // Extract only text, ignore font/size/color properties
           if (typeof seg === "string") return seg;
           if (typeof seg.text === "string") return seg.text;
           return "";
         })
-        .join("");
-      // Clean up mailto: prefix
-      if (text.toLowerCase().startsWith("mailto:")) {
-        text = text.substring(7);
-      }
-      text = text.replace(/[\u200B-\u200D\uFEFF]/g, "");
-      text = text.normalize("NFKC");
-      text = mathAlnumToAscii(text);
-      return text;
+        .join("")
+        .trim();
+      if (t.toLowerCase().startsWith("mailto:")) return t.substring(7).trim();
+      return t;
     }
 
-    // Hyperlink object: { text: "...", hyperlink: "mailto:..." }
     if ("hyperlink" in v) {
-      // Try to get email from hyperlink if it's a mailto link
-      const hyperlink = String(v.hyperlink || "");
-      if (hyperlink.toLowerCase().startsWith("mailto:")) {
-        let out = hyperlink.substring(7);
-        out = out.replace(/[\u200B-\u200D\uFEFF]/g, "");
-        out = out.normalize("NFKC");
-        out = mathAlnumToAscii(out);
-        return out;
-      }
-      // Otherwise use text property
-      if ("text" in v && typeof v.text === "string") {
-        let out = v.text;
-        out = out.replace(/[\u200B-\u200D\uFEFF]/g, "");
-        out = out.normalize("NFKC");
-        out = mathAlnumToAscii(out);
-        return out;
-      }
+      const hyperlink = String(v.hyperlink || "").trim();
+      if (hyperlink.toLowerCase().startsWith("mailto:"))
+        return hyperlink.substring(7).trim();
+      if ("text" in v && typeof v.text === "string") return v.text.trim();
     }
 
-    // Simple text object: { text: "..." }
     if ("text" in v && typeof v.text === "string") {
-      let text = v.text;
-      if (text.toLowerCase().startsWith("mailto:")) {
-        text = text.substring(7);
-      }
-      text = text.replace(/[\u200B-\u200D\uFEFF]/g, "");
-      text = text.normalize("NFKC");
-      text = mathAlnumToAscii(text);
-      return text;
+      const t = v.text.trim();
+      if (t.toLowerCase().startsWith("mailto:")) return t.substring(7).trim();
+      return t;
     }
 
-    // Formula result
-    if ("result" in v) {
-      return extractPlainText(v.result);
-    }
+    if ("result" in v) return extractPlainText(v.result);
+    if (Array.isArray(v)) return v.map((it) => extractPlainText(it)).join(" ");
 
-    // Array of values
-    if (Array.isArray(v)) {
-      return v.map((item) => extractPlainText(item)).join(" ");
-    }
-
-    // Try toString as last resort
     if (typeof v.toString === "function") {
       const s = v.toString();
       if (s && s !== "[object Object]") {
-        if (s.toLowerCase().startsWith("mailto:")) {
-          let out = s.substring(7);
-          out = out.replace(/[\u200B-\u200D\uFEFF]/g, "");
-          out = out.normalize("NFKC");
-          out = mathAlnumToAscii(out);
-          return out;
-        }
-        let out = s;
-        out = out.replace(/[\u200B-\u200D\uFEFF]/g, "");
-        out = out.normalize("NFKC");
-        out = mathAlnumToAscii(out);
-        return out;
+        const t = s.trim();
+        if (t.toLowerCase().startsWith("mailto:")) return t.substring(7).trim();
+        return t;
       }
     }
   }
@@ -238,23 +129,14 @@ const extractPlainText = (v: any): string => {
 
 const normalizeCellValue = (v: any): string | number | null => {
   if (v === null || v === undefined) return null;
-
-  // For numbers, return as-is
   if (typeof v === "number") return v;
-
-  // Extract plain text from any complex format
-  const plainText = extractPlainText(v).trim();
-
-  // Return null for empty strings
-  if (!plainText) return null;
-
-  // Clean up any remaining formatting artifacts
-  // Remove zero-width characters, control characters, etc.
-  const cleaned = plainText
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "") // Control characters
-    .replace(/\s+/g, " ") // Normalize whitespace
+  const plain = extractPlainText(v).trim();
+  if (!plain) return null;
+  const cleaned = plain
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .replace(/\s+/g, " ")
     .trim();
-
   return cleaned || null;
 };
 
@@ -284,14 +166,12 @@ const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
     }
   }
 
-  if (out.email && typeof out.email === "string") {
+  if (out.email && typeof out.email === "string")
     out.email = out.email.trim().toLowerCase();
-  }
-
-  if (out.instagramHandle && typeof out.instagramHandle === "string") {
+  if (out.instagramHandle && typeof out.instagramHandle === "string")
     out.instagramHandle = out.instagramHandle.trim().replace(/^@+/, "");
-  }
 
+  // normalize name if it's a JSON-ish string
   if (out.name && typeof out.name === "string") {
     try {
       if (out.name.startsWith("{") || out.name.startsWith("[")) {
@@ -318,7 +198,7 @@ const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
         }
       }
     } catch {
-      // ignore parse errors
+      // ignore
     }
   }
 
@@ -347,7 +227,6 @@ export const startImportWorker = () => {
         return;
       }
 
-      // Ensure we have a local path to pass to ExcelJS. If gs://, download first.
       let localFilePath = String(rawFilePath || "");
       let downloadedTemp = false;
       try {
@@ -361,7 +240,6 @@ export const startImportWorker = () => {
               "[import.worker] failed to download GCS file:",
               dlErr
             );
-            // mark job failed in DB and exit
             try {
               await prisma.importJob.update({
                 where: { id: importJobId },
@@ -405,7 +283,7 @@ export const startImportWorker = () => {
             return;
           }
         } catch (e) {
-          // proceed — defensive
+          // proceed defensively
         }
 
         const io = (() => {
@@ -415,7 +293,6 @@ export const startImportWorker = () => {
             return null;
           }
         })();
-
         const emit = async (payload: any) => {
           try {
             await publishImportProgress(importJobId, {
@@ -432,24 +309,22 @@ export const startImportWorker = () => {
           } catch {}
         };
 
-        // -------------------------
-        // PASS 1: VALIDATION (no DB writes)
-        // -------------------------
+        // PASS 1: validation
         let headers: string[] | null = null;
         let validationRowIndex = 0;
-        const missingHandles: Array<{ row: number; reason?: string }> = [];
+        const validationErrors: Array<{ row: number; reason?: string }> = [];
 
         try {
-          const validationReader = new (
-            ExcelJS as any
-          ).stream.xlsx.WorkbookReader(localFilePath, {
-            entries: "emit",
-            sharedStrings: "emit",
-            hyperlinks: "emit",
-            worksheets: "emit",
-          });
-
-          for await (const worksheet of validationReader) {
+          const reader = new (ExcelJS as any).stream.xlsx.WorkbookReader(
+            localFilePath,
+            {
+              entries: "emit",
+              sharedStrings: "emit",
+              hyperlinks: "emit",
+              worksheets: "emit",
+            }
+          );
+          for await (const worksheet of reader) {
             for await (const row of worksheet) {
               const values = (row.values || []) as any[];
               if (!Array.isArray(values)) continue;
@@ -470,65 +345,54 @@ export const startImportWorker = () => {
                   }
                   return false;
                 })();
-
                 if (!hasAnyCell) continue;
 
                 const candidateHeaders: string[] = new Array(maxIndex).fill("");
                 for (let i = 1; i <= maxIndex; i++) {
                   try {
-                    const raw = values[i];
-                    candidateHeaders[i - 1] = normalizeHeader(raw) || "";
+                    candidateHeaders[i - 1] = normalizeHeader(values[i]) || "";
                   } catch {
                     candidateHeaders[i - 1] = "";
                   }
                 }
-
                 const nonEmpty = candidateHeaders.some((h) => !!h);
                 if (!nonEmpty) continue;
-
-                for (let i = 0; i < candidateHeaders.length; i++) {
+                for (let i = 0; i < candidateHeaders.length; i++)
                   if (!candidateHeaders[i])
                     candidateHeaders[i] = `col_${i + 1}`;
-                }
-
-                headers = candidateHeaders.map((h) => String(h));
-                headers = headers.map((h) => h.replace(/\s+/g, " ").trim());
+                headers = candidateHeaders
+                  .map((h) => String(h))
+                  .map((h) => h.replace(/\s+/g, " ").trim());
                 continue;
               }
 
               validationRowIndex++;
-
               let parsed: ParsedRow;
               try {
-                // IMPORTANT: parseRowFromHeaders expects the same values array shape
-                // ExcelJS provides row.values as 1-based indexing; parseRowFromHeaders
-                // in your import-helpers should also access values[idx+1]. If not,
-                // update parseRowFromHeaders accordingly to avoid off-by-one issues.
                 parsed = parseRowFromHeaders(headers, values);
-              } catch (e) {
-                missingHandles.push({
+              } catch (e: any) {
+                validationErrors.push({
                   row: validationRowIndex,
-                  reason: `parse error: ${(e as any)?.message ?? String(e)}`,
+                  reason: `parse error: ${e?.message ?? String(e)}`,
                 });
                 continue;
               }
 
+              // normalize for validation pass (won't write yet)
               parsed = normalizeParsedRow(parsed);
-              // No longer blocking on missing instagramHandle - will import with empty handle
             }
             break; // only first worksheet
           }
-        } catch (e) {
-          missingHandles.push({
+        } catch (e: any) {
+          validationErrors.push({
             row: -1,
             reason: `validation pass failed: ${String(e)}`,
           });
         }
 
-        // Only fail on critical validation errors, not missing handles
-        const criticalErrors = missingHandles.filter((m) => m.row === -1);
-        if (criticalErrors.length > 0) {
-          const errEntries = criticalErrors.map((m) => ({ error: m.reason }));
+        const critical = validationErrors.filter((m) => m.row === -1);
+        if (critical.length > 0) {
+          const errEntries = critical.map((m) => ({ error: m.reason }));
           try {
             await prisma.importJob.update({
               where: { id: importJobId },
@@ -540,7 +404,6 @@ export const startImportWorker = () => {
               uErr
             );
           }
-
           await emit({
             error: "Validation failed",
             failed: true,
@@ -555,12 +418,10 @@ export const startImportWorker = () => {
             failed: 0,
             duplicates: [],
             errors: errEntries,
-          };
+          } as any;
         }
 
-        // -------------------------
-        // PASS 2: PROCESSING
-        // -------------------------
+        // PASS 2: processing
         try {
           await prisma.importJob.update({
             where: { id: importJobId },
@@ -575,15 +436,15 @@ export const startImportWorker = () => {
         const duplicates: any[] = [];
 
         try {
-          const workbookReader = new (
-            ExcelJS as any
-          ).stream.xlsx.WorkbookReader(localFilePath, {
-            entries: "emit",
-            sharedStrings: "emit",
-            hyperlinks: "emit",
-            worksheets: "emit",
-          });
-
+          const reader = new (ExcelJS as any).stream.xlsx.WorkbookReader(
+            localFilePath,
+            {
+              entries: "emit",
+              sharedStrings: "emit",
+              hyperlinks: "emit",
+              worksheets: "emit",
+            }
+          );
           headers = null;
           let buffer: ParsedRow[] = [];
           const debugRows: any[] = [];
@@ -689,7 +550,7 @@ export const startImportWorker = () => {
             });
           };
 
-          for await (const worksheet of workbookReader) {
+          for await (const worksheet of reader) {
             for await (const row of worksheet) {
               const values = (row.values || []) as any[];
               if (!Array.isArray(values)) continue;
@@ -715,25 +576,20 @@ export const startImportWorker = () => {
                 const candidateHeaders: string[] = new Array(maxIndex).fill("");
                 for (let i = 1; i <= maxIndex; i++) {
                   try {
-                    const raw = values[i];
-                    candidateHeaders[i - 1] = normalizeHeader(raw) || "";
+                    candidateHeaders[i - 1] = normalizeHeader(values[i]) || "";
                   } catch {
                     candidateHeaders[i - 1] = "";
                   }
                 }
-
                 const nonEmpty = candidateHeaders.some((h) => !!h);
                 if (!nonEmpty) continue;
-
-                for (let i = 0; i < candidateHeaders.length; i++) {
+                for (let i = 0; i < candidateHeaders.length; i++)
                   if (!candidateHeaders[i])
                     candidateHeaders[i] = `col_${i + 1}`;
-                }
-
-                headers = candidateHeaders.map((h) => String(h));
-                headers = headers.map((h) => h.replace(/\s+/g, " ").trim());
-
-                if (process.env.IMPORT_DEBUG === "true") {
+                headers = candidateHeaders
+                  .map((h) => String(h))
+                  .map((h) => h.replace(/\s+/g, " ").trim());
+                if (process.env.IMPORT_DEBUG === "true")
                   try {
                     console.log(
                       `[import.worker] detected headers for ${
@@ -742,13 +598,11 @@ export const startImportWorker = () => {
                       headers
                     );
                   } catch {}
-                }
                 continue;
               }
 
               processed++;
 
-              // Build obj using 1-based ExcelJS indexing: values[idx + 1]
               const obj: any = {};
               headers.forEach((h, idx) => {
                 obj[h] = values[idx + 1] ?? null;
@@ -756,9 +610,8 @@ export const startImportWorker = () => {
 
               let parsed: ParsedRow;
               try {
-                // IMPORTANT: parseRowFromHeaders should also assume ExcelJS 1-based indexing
                 parsed = parseRowFromHeaders(headers, values);
-              } catch (e) {
+              } catch (e: any) {
                 failed++;
                 errors.push({
                   row: processed + 1,
@@ -780,7 +633,7 @@ export const startImportWorker = () => {
                 });
               }
 
-              // Use normalized plain text for the raw email cell (canonical)
+              // raw email canonical check
               const rawEmailCellNormalized = normalizeCellValue(
                 obj["email"] ?? obj["e-mail"] ?? obj["e_mail"] ?? null
               );
@@ -796,15 +649,14 @@ export const startImportWorker = () => {
                 !parsed.email &&
                 (looksDM || (emailCellEmpty && !!parsed.instagramHandle));
 
-              if (shouldMarkDM && !parsed.notes) {
+              if (shouldMarkDM && !parsed.notes)
                 parsed.notes = "Contact is through DM.";
-              } else if (shouldMarkDM && parsed.notes && !parsed.email) {
+              else if (shouldMarkDM && parsed.notes && !parsed.email) {
                 const append = "Contact is through DM.";
                 if (!parsed.notes.includes(append))
                   parsed.notes = `${parsed.notes}\n${append}`;
               }
 
-              // Buffer row for batch insert
               buffer.push(parsed);
               if (buffer.length >= BATCH_SIZE) await flush();
 
@@ -843,11 +695,17 @@ export const startImportWorker = () => {
                   try {
                     if (downloadedTemp) await fs.promises.unlink(localFilePath);
                   } catch {}
-                  return { processed, success, failed, duplicates, errors };
+                  return {
+                    processed,
+                    success,
+                    failed,
+                    duplicates,
+                    errors,
+                  } as any;
                 }
               }
             }
-            break; // only first worksheet
+            break; // first worksheet only
           }
 
           if (buffer.length) await flush();
@@ -886,7 +744,7 @@ export const startImportWorker = () => {
           try {
             if (downloadedTemp) await fs.promises.unlink(localFilePath);
           } catch (e) {}
-          return { processed, success, failed, duplicates, errors };
+          return { processed, success, failed, duplicates, errors } as any;
         } catch (err: any) {
           try {
             await prisma.importJob.update({
@@ -902,7 +760,6 @@ export const startImportWorker = () => {
               uErr
             );
           }
-
           await emit({ error: err?.message ?? String(err), failed: true });
           try {
             if (downloadedTemp) await fs.promises.unlink(localFilePath);
@@ -911,11 +768,9 @@ export const startImportWorker = () => {
         }
       } catch (unexpectedErr) {
         console.error("[import.worker] unexpected error:", unexpectedErr);
-        // try to cleanup any temp file if present
         try {
-          if (localFilePath && localFilePath.startsWith(os.tmpdir())) {
+          if (localFilePath && localFilePath.startsWith(os.tmpdir()))
             await fs.promises.unlink(localFilePath);
-          }
         } catch {}
         throw unexpectedErr;
       }
@@ -929,13 +784,10 @@ export const startImportWorker = () => {
   worker.on("failed", (job, err) => {
     console.error("[import.worker] job failed", job?.id, err);
   });
-
   worker.on("completed", (job) => {
     console.log("[import.worker] job completed", job?.id);
   });
 
-  console.log(
-    "[import.worker] started (GCS-aware two-pass validation, improved email normalization)"
-  );
+  console.log("[import.worker] started (GCS-aware two-pass validation)");
   return worker;
 };

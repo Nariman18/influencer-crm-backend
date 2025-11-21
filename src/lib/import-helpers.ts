@@ -2,9 +2,7 @@
 import { InfluencerStatus, Prisma } from "@prisma/client";
 
 /**
- * Note: ParsedRow fields are intentionally permissive (any) because row parsing
- * may return ExcelJS cell objects / arrays / formula objects. The import worker
- * will normalize these to primitives before persisting.
+ * ParsedRow: permissive types because ExcelJS cell values can be objects / richText
  */
 export interface ParsedRow {
   name: any;
@@ -47,7 +45,7 @@ export const looksLikeDM = (s: string | null | undefined): boolean => {
 
   for (const m of markers) {
     if (v === m) return true;
-    if (v.includes(m!)) return true;
+    if (v.includes(m)) return true;
   }
 
   if (/(\(|\)|\/|\\)/.test(v) && /dm/.test(v)) return true;
@@ -57,16 +55,14 @@ export const looksLikeDM = (s: string | null | undefined): boolean => {
 
 /**
  * Extract plain text from any cell value (handles richText, objects, etc.)
+ * NOTE: intentionally simple — does NOT attempt fancy font conversions.
  */
-const extractCellText = (v: any): string => {
+export const extractCellText = (v: any): string => {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") {
-    // Clean up mailto: prefix and trim
-    let text = v.trim();
-    if (text.toLowerCase().startsWith("mailto:")) {
-      text = text.substring(7).trim();
-    }
-    return text;
+    let s = v.trim();
+    if (s.toLowerCase().startsWith("mailto:")) s = s.substring(7).trim();
+    return s;
   }
   if (typeof v === "number") return String(v);
   if (typeof v === "boolean") return v ? "true" : "false";
@@ -74,7 +70,7 @@ const extractCellText = (v: any): string => {
   if (typeof v === "object") {
     // ExcelJS richText format
     if ("richText" in v && Array.isArray(v.richText)) {
-      let text = v.richText
+      const text = v.richText
         .map((seg: any) => {
           if (!seg) return "";
           if (typeof seg === "string") return seg;
@@ -83,57 +79,45 @@ const extractCellText = (v: any): string => {
         })
         .join("")
         .trim();
-      // Clean up mailto: prefix
-      if (text.toLowerCase().startsWith("mailto:")) {
-        text = text.substring(7).trim();
-      }
+      if (text.toLowerCase().startsWith("mailto:"))
+        return text.substring(7).trim();
       return text;
     }
 
-    // Hyperlink object: { text: "...", hyperlink: "mailto:..." }
+    // hyperlink object: { text, hyperlink }
     if ("hyperlink" in v) {
-      // Try to get email from hyperlink if it's a mailto link
       const hyperlink = String(v.hyperlink || "").trim();
       if (hyperlink.toLowerCase().startsWith("mailto:")) {
         return hyperlink.substring(7).trim();
       }
-      // Otherwise use text property
-      if ("text" in v && typeof v.text === "string") {
-        return v.text.trim();
-      }
+      if ("text" in v && typeof v.text === "string") return v.text.trim();
     }
 
-    // Simple text object
+    // simple text object
     if ("text" in v && typeof v.text === "string") {
-      let text = v.text.trim();
-      if (text.toLowerCase().startsWith("mailto:")) {
-        text = text.substring(7).trim();
-      }
-      return text;
+      const t = v.text.trim();
+      if (t.toLowerCase().startsWith("mailto:")) return t.substring(7).trim();
+      return t;
     }
 
-    // Formula result
-    if ("result" in v) {
-      return extractCellText(v.result);
-    }
+    // formula result
+    if ("result" in v) return extractCellText(v.result);
 
-    // Array of values
+    // array
     if (Array.isArray(v)) {
       return v
-        .map((item) => extractCellText(item))
+        .map((it) => extractCellText(it))
         .join(" ")
         .trim();
     }
 
-    // Try toString as last resort
+    // fallback
     if (typeof v.toString === "function") {
       const s = v.toString();
       if (s && s !== "[object Object]") {
-        let text = s.trim();
-        if (text.toLowerCase().startsWith("mailto:")) {
-          text = text.substring(7).trim();
-        }
-        return text;
+        const t = s.trim();
+        if (t.toLowerCase().startsWith("mailto:")) return t.substring(7).trim();
+        return t;
       }
     }
   }
@@ -165,34 +149,28 @@ export function extractInstagramHandleFromLink(
 }
 
 /**
- * Given `headers` array and `values` array (row values with 1-based or 0-based indexing),
- * build a ParsedRow. This function is intentionally conservative: it returns raw cell
- * values (not stringified) for fields like `name` so the import worker can normalize
- * complex ExcelJS objects (richText / formula objects / arrays) later.
+ * parseRowFromHeaders
+ * - headers: normalized header list (strings)
+ * - values: ExcelJS row.values (1-based array)
+ *
+ * This version is conservative and explicitly uses values[index+1].
  */
 export function parseRowFromHeaders(
   headers: string[],
   values: any[]
 ): ParsedRow {
-  // defensive: ensure headers is an array and values is the ExcelJS row.values (1-based)
   const headerMap = headers.map((h) =>
     (h || "").toString().trim().toLowerCase()
   );
 
-  // helper: fetch a cell by header name (case-insensitive, allow contains)
   const getCellByNames = (names: string[]) => {
     for (const nm of names) {
       // exact match first
       const exactIdx = headerMap.findIndex((h) => h === nm);
-      if (exactIdx >= 0) {
-        // ExcelJS row.values are 1-based
-        return values[exactIdx + 1] ?? null;
-      }
+      if (exactIdx >= 0) return values[exactIdx + 1] ?? null;
       // contains fallback
       const containsIdx = headerMap.findIndex((h) => h.includes(nm));
-      if (containsIdx >= 0) {
-        return values[containsIdx + 1] ?? null;
-      }
+      if (containsIdx >= 0) return values[containsIdx + 1] ?? null;
     }
     return null;
   };
@@ -221,7 +199,6 @@ export function parseRowFromHeaders(
   const rawNotes = getCellByNames(["notes", "note", "comments", "comment"]);
   const rawCountry = getCellByNames(["country", "location", "nation"]);
 
-  // normalize and try to detect handle from link or nickname
   const linkStr = rawLink ? String(rawLink).trim() : null;
   let instagramHandle = extractInstagramHandleFromLink(linkStr);
 
@@ -230,7 +207,6 @@ export function parseRowFromHeaders(
     if (/^[A-Za-z0-9._]{1,30}$/.test(cand)) instagramHandle = cand;
   }
 
-  // Use extractCellText to safely get plain text from rawEmail (handles richText/hyperlinks/etc.)
   const emailCandidate =
     rawEmail === null || rawEmail === undefined
       ? null
@@ -240,7 +216,6 @@ export function parseRowFromHeaders(
       ? emailCandidate.toLowerCase()
       : null;
 
-  // followers coercion
   let followersNum: number | null = null;
   if (rawFollowers !== null && rawFollowers !== undefined) {
     const rawFollowersStr = String(rawFollowers).trim();
@@ -252,7 +227,6 @@ export function parseRowFromHeaders(
 
   const name = rawNickname ?? instagramHandle ?? null;
 
-  // Notes handling + DM logic
   let notesVal: string | null =
     rawNotes !== null && rawNotes !== undefined
       ? String(rawNotes).trim()
@@ -261,6 +235,7 @@ export function parseRowFromHeaders(
     rawEmail !== null && rawEmail !== undefined
       ? String(extractCellText(rawEmail)).trim()
       : null;
+
   const considerDM =
     (!email && looksLikeDM(rawEmailCell)) ||
     (!email &&
@@ -291,8 +266,6 @@ export function parseRowFromHeaders(
 
 /**
  * Map ParsedRow -> Prisma.InfluencerCreateManyInput
- * Note: import worker will call normalizeParsedRow before mappedToCreateMany,
- * so values here should already be primitives.
  */
 export function mappedToCreateMany(
   row: ParsedRow,

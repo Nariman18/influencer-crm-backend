@@ -701,15 +701,31 @@ export const addBulkEmailJobs = async (
   const jitterBoundMs =
     typeof opts?.jitterMs === "number" ? opts.jitterMs : isProd ? 2000 : 0;
 
-  const total = jobsData.length;
-  for (let i = 0; i < total; i++) {
+  const domainIntervalMap: Record<string, number> = {
+    "hotmail.com": 20,
+    "outlook.com": 20,
+    "yahoo.com": 20,
+    "yahoo.gr": 20,
+    "gmail.com": 5,
+    "mail.ru": 5,
+  };
+
+  const domainFor = (email: string) =>
+    (email.split("@").pop() || "").toLowerCase();
+  const domainCounters: Record<string, number> = {};
+
+  for (let i = 0; i < jobsData.length; i++) {
     const job = jobsData[i];
-    const baseDelayMs = Math.round(i * intervalSec * 1000);
-    const jitter = jitterBoundMs
-      ? Math.floor(Math.random() * jitterBoundMs)
-      : 0;
-    const delayMs = Math.max(0, baseDelayMs + jitter);
     try {
+      const domain = domainFor(job.to || "");
+      const perDomainIntervalSec = domainIntervalMap[domain] ?? intervalSec;
+      const count = domainCounters[domain] || 0;
+      const baseDelayMs = Math.round(count * perDomainIntervalSec * 1000);
+      const jitter = jitterBoundMs
+        ? Math.floor(Math.random() * jitterBoundMs)
+        : 0;
+      const delayMs = Math.max(0, baseDelayMs + jitter);
+
       const qJob = await addEmailJob(job, delayMs);
       ids.push(String(qJob.id));
       console.log(
@@ -717,6 +733,8 @@ export const addBulkEmailJobs = async (
           qJob.id
         )} (delay=${delayMs}ms) for ${job.to}`
       );
+
+      domainCounters[domain] = count + 1;
     } catch (err) {
       console.error("[addBulkEmailJobs] failed to queue job:", err, {
         index: i,
@@ -724,6 +742,7 @@ export const addBulkEmailJobs = async (
       });
     }
   }
+
   return ids;
 };
 

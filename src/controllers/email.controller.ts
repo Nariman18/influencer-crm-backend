@@ -7,9 +7,9 @@ import { google } from "googleapis";
 import { EmailStatus, InfluencerStatus } from "@prisma/client";
 import redisQueue, { EmailJobData } from "../lib/redis-queue";
 import { buildEmailHtml } from "../lib/email-wrap-body";
+import { isSuppressedByMailgun, domainHasMX } from "../lib/mailgun-helpers";
 
 const prisma = getPrisma();
-
 const OAuth2 = google.auth.OAuth2;
 
 export class EmailService {
@@ -392,6 +392,7 @@ export const sendEmail = async (
       },
     });
 
+    // Interactive/single sends remain immediate (no domain-spacing).
     await redisQueue.addEmailJob({
       userId: req.user.id,
       to: influencer.email!,
@@ -479,6 +480,86 @@ export const bulkSendEmails = async (
           continue;
         }
 
+        const to = influencer.email.trim();
+
+        // Basic syntactic validation
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+          const failed = await prisma.email.create({
+            data: {
+              influencerId,
+              templateId,
+              sentById: req.user.id,
+              subject: template.subject,
+              body: "Invalid recipient email format",
+              status: EmailStatus.FAILED,
+              errorMessage: "Invalid recipient format",
+            },
+          });
+          emailRecords.push(failed);
+          continue;
+        }
+
+        // MX check
+        const domain = to.split("@").pop() || "";
+        const hasMx = await domainHasMX(domain);
+        if (!hasMx) {
+          const failed = await prisma.email.create({
+            data: {
+              influencerId,
+              templateId,
+              sentById: req.user.id,
+              subject: template.subject,
+              body: buildEmailHtml(
+                replaceVariables(template.body, {
+                  ...variables,
+                  name: influencer.name,
+                  email: influencer.email,
+                }),
+                influencer.name || "",
+                senderAddress
+              ),
+              status: EmailStatus.FAILED,
+              errorMessage: `No MX records for domain: ${domain}`,
+            },
+          });
+          emailRecords.push(failed);
+          continue;
+        }
+
+        // Mailgun suppression check (bounces/complaints/unsubscribes)
+        let suppressed = false;
+        try {
+          suppressed = await isSuppressedByMailgun(to);
+        } catch (e) {
+          // network or API hiccup: assume not suppressed (we could also opt to fail-safely)
+          console.warn("[bulkSendEmails] mailgun suppression check failed:", e);
+        }
+        if (suppressed) {
+          const failed = await prisma.email.create({
+            data: {
+              influencerId,
+              templateId,
+              sentById: req.user.id,
+              subject: template.subject,
+              body: buildEmailHtml(
+                replaceVariables(template.body, {
+                  ...variables,
+                  name: influencer.name,
+                  email: influencer.email,
+                }),
+                influencer.name || "",
+                senderAddress
+              ),
+              status: EmailStatus.FAILED,
+              errorMessage:
+                "Recipient suppressed by Mailgun (bounced/complaint/unsubscribed)",
+            },
+          });
+          emailRecords.push(failed);
+          continue;
+        }
+
+        // Passed prechecks — build personalized subject/body
         const personalizedVars = {
           ...variables,
           name: influencer.name,
@@ -513,7 +594,7 @@ export const bulkSendEmails = async (
 
         const jobPayload: any = {
           userId: req.user.id,
-          to: influencer.email!,
+          to,
           subject,
           body: wrappedBody,
           influencerName: influencer.name,
@@ -541,20 +622,32 @@ export const bulkSendEmails = async (
       }
     }
 
+    // Queue the jobs using centralized logic in redis-queue.addBulkEmailJobs
+    // pass optional tuning values from env
     const jobIds = await redisQueue.addBulkEmailJobs(jobsData, {
-      intervalSec: Number(process.env.BULK_SEND_INTERVAL_SEC) || 5,
-      jitterMs: Number(process.env.BULK_SEND_JITTER_MS) || 1500,
+      intervalSec: Number(process.env.BULK_SEND_INTERVAL_SEC) || undefined,
+      jitterMs: Number(process.env.BULK_SEND_JITTER_MS) || undefined,
     });
 
+    // Update influencers en masse when automation starts (only those actually included)
     if (startAutomation) {
       try {
-        await prisma.influencer.updateMany({
-          where: { id: { in: influencerIds } },
-          data: {
-            status: InfluencerStatus.PING_1,
-            lastContactDate: new Date(),
-          },
-        });
+        // only update influencerIds that we actually included (jobsData mapping)
+        const queuedInfluencerIds = jobsData
+          .map((j) => j.influencerId)
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0
+          );
+
+        if (queuedInfluencerIds.length > 0) {
+          await prisma.influencer.updateMany({
+            where: { id: { in: queuedInfluencerIds } },
+            data: {
+              status: InfluencerStatus.PING_1,
+              lastContactDate: new Date(),
+            },
+          });
+        }
       } catch (e) {
         console.warn("Failed to set influencers to PING_1 en masse:", e);
       }

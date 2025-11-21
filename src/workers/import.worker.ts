@@ -84,7 +84,14 @@ const normalizeHeader = (h: any) => {
  */
 const extractPlainText = (v: any): string => {
   if (v === null || v === undefined) return "";
-  if (typeof v === "string") return v;
+  if (typeof v === "string") {
+    // Clean up mailto: prefix
+    let text = v;
+    if (text.toLowerCase().startsWith("mailto:")) {
+      text = text.substring(7);
+    }
+    return text;
+  }
   if (typeof v === "number") return String(v);
   if (typeof v === "boolean") return v ? "true" : "false";
   if (v instanceof Date) return v.toISOString();
@@ -92,7 +99,7 @@ const extractPlainText = (v: any): string => {
   if (typeof v === "object") {
     // ExcelJS richText format: { richText: [{ text: "...", font: {...} }, ...] }
     if ("richText" in v && Array.isArray(v.richText)) {
-      return v.richText
+      let text = v.richText
         .map((seg: any) => {
           if (!seg) return "";
           // Extract only text, ignore font/size/color properties
@@ -101,21 +108,38 @@ const extractPlainText = (v: any): string => {
           return "";
         })
         .join("");
+      // Clean up mailto: prefix
+      if (text.toLowerCase().startsWith("mailto:")) {
+        text = text.substring(7);
+      }
+      return text;
+    }
+
+    // Hyperlink object: { text: "...", hyperlink: "mailto:..." }
+    if ("hyperlink" in v) {
+      // Try to get email from hyperlink if it's a mailto link
+      const hyperlink = String(v.hyperlink || "");
+      if (hyperlink.toLowerCase().startsWith("mailto:")) {
+        return hyperlink.substring(7);
+      }
+      // Otherwise use text property
+      if ("text" in v && typeof v.text === "string") {
+        return v.text;
+      }
     }
 
     // Simple text object: { text: "..." }
     if ("text" in v && typeof v.text === "string") {
-      return v.text;
+      let text = v.text;
+      if (text.toLowerCase().startsWith("mailto:")) {
+        text = text.substring(7);
+      }
+      return text;
     }
 
     // Formula result
     if ("result" in v) {
       return extractPlainText(v.result);
-    }
-
-    // Hyperlink object: { text: "...", hyperlink: "..." }
-    if ("hyperlink" in v && "text" in v) {
-      return typeof v.text === "string" ? v.text : "";
     }
 
     // Array of values
@@ -126,7 +150,12 @@ const extractPlainText = (v: any): string => {
     // Try toString as last resort
     if (typeof v.toString === "function") {
       const s = v.toString();
-      if (s && s !== "[object Object]") return s;
+      if (s && s !== "[object Object]") {
+        if (s.toLowerCase().startsWith("mailto:")) {
+          return s.substring(7);
+        }
+        return s;
+      }
     }
   }
 

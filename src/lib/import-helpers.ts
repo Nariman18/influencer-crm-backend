@@ -55,9 +55,93 @@ export const looksLikeDM = (s: string | null | undefined): boolean => {
   return false;
 };
 
-const emailLooksValid = (s: string | null | undefined): boolean => {
+/**
+ * Extract plain text from any cell value (handles richText, objects, etc.)
+ */
+const extractCellText = (v: any): string => {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") {
+    // Clean up mailto: prefix and trim
+    let text = v.trim();
+    if (text.toLowerCase().startsWith("mailto:")) {
+      text = text.substring(7).trim();
+    }
+    return text;
+  }
+  if (typeof v === "number") return String(v);
+  if (typeof v === "boolean") return v ? "true" : "false";
+
+  if (typeof v === "object") {
+    // ExcelJS richText format
+    if ("richText" in v && Array.isArray(v.richText)) {
+      let text = v.richText
+        .map((seg: any) => {
+          if (!seg) return "";
+          if (typeof seg === "string") return seg;
+          if (typeof seg.text === "string") return seg.text;
+          return "";
+        })
+        .join("")
+        .trim();
+      // Clean up mailto: prefix
+      if (text.toLowerCase().startsWith("mailto:")) {
+        text = text.substring(7).trim();
+      }
+      return text;
+    }
+
+    // Hyperlink object: { text: "...", hyperlink: "mailto:..." }
+    if ("hyperlink" in v) {
+      // Try to get email from hyperlink if it's a mailto link
+      const hyperlink = String(v.hyperlink || "").trim();
+      if (hyperlink.toLowerCase().startsWith("mailto:")) {
+        return hyperlink.substring(7).trim();
+      }
+      // Otherwise use text property
+      if ("text" in v && typeof v.text === "string") {
+        return v.text.trim();
+      }
+    }
+
+    // Simple text object
+    if ("text" in v && typeof v.text === "string") {
+      let text = v.text.trim();
+      if (text.toLowerCase().startsWith("mailto:")) {
+        text = text.substring(7).trim();
+      }
+      return text;
+    }
+
+    // Formula result
+    if ("result" in v) {
+      return extractCellText(v.result);
+    }
+
+    // Array of values
+    if (Array.isArray(v)) {
+      return v.map((item) => extractCellText(item)).join(" ").trim();
+    }
+
+    // Try toString as last resort
+    if (typeof v.toString === "function") {
+      const s = v.toString();
+      if (s && s !== "[object Object]") {
+        let text = s.trim();
+        if (text.toLowerCase().startsWith("mailto:")) {
+          text = text.substring(7).trim();
+        }
+        return text;
+      }
+    }
+  }
+
+  return "";
+};
+
+const emailLooksValid = (s: any): boolean => {
   if (s === null || s === undefined) return false;
-  const normalized = String(s).trim();
+  // Extract plain text first (handles richText, objects, etc.)
+  const normalized = extractCellText(s).trim();
   if (!normalized) return false;
   if (looksLikeDM(normalized.toLowerCase())) return false;
   return /^\S+@\S+\.\S+$/.test(normalized);
@@ -141,7 +225,7 @@ export function parseRowFromHeaders(
   }
 
   const email = emailLooksValid(rawEmail)
-    ? String(rawEmail).trim().toLowerCase()
+    ? extractCellText(rawEmail).trim().toLowerCase()
     : null;
 
   // --- FIX: coerce to String for emptiness check to avoid TS comparing incompatible unions ---

@@ -1,97 +1,138 @@
-// delete-influencers.js
+#!/usr/bin/env node
 /**
- * Usage:
- *  node delete-influencers.js --managerId=<USER_ID> [--status=PING_1] [--dryRun] --yes
- *  OR
- *  node delete-influencers.js --managerEmail=manager@company.com --status=PING_1 --yes
+ * delete-influencers.js
+ *
+ * Usage examples:
+ *  # Dry run - show what would be deleted for a single manager:
+ *  node delete-influencers.js --managerId=4b4fbe80-90c5-46d1-863f-95119cf29a16
+ *
+ *  # Actually delete ALL influencers for a single manager:
+ *  node delete-influencers.js --managerId=4b4fbe80-90c5-46d1-863f-95119cf29a16 --all --yes
+ *
+ *  # Delete influencers (any status) for multiple managers (comma-separated):
+ *  node delete-influencers.js --managerIds=ID1,ID2,ID3 --all --yes
+ *
+ *  # Use emails instead of ids:
+ *  node delete-influencers.js --managerEmail=manager@company.com --all --yes
+ *
+ *  # Filter by status (only delete those with status):
+ *  node delete-influencers.js --managerId=... --status=PING_1 --yes
  *
  * Notes:
- *  - The script finds influencer IDs from the `email` table where sentById == managerId
- *    (this covers the "manager made initial bulk sends" scenario).
- *  - It then optionally filters those influencers by status (e.g. PING_1).
- *  - It deletes related emails first, then influencers.
- *  - Use --yes to actually run deletion; otherwise it's a dry run.
+ *  - By default script runs in dry-run mode. Add --yes to actually delete.
+ *  - Use --all to delete all influencers belonging to the manager(s).
+ *    If --all is not provided, the script will find influencers referenced by
+ *    email records sent by the manager (same as your previous script).
  */
 
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 
 function parseArgs() {
-  const args = process.argv.slice(2);
+  const argv = process.argv.slice(2);
   const out = {};
-  args.forEach((a) => {
-    const [k, v] = a.startsWith("--") ? a.slice(2).split("=") : [null, null];
-    if (k) out[k] = v === undefined ? true : v;
-  });
+  for (const raw of argv) {
+    if (!raw.startsWith("--")) continue;
+    const [rawKey, ...rest] = raw.slice(2).split("=");
+    const key = rawKey;
+    const value = rest.length ? rest.join("=") : true;
+
+    // normalize: allow repeated keys and comma-separated lists
+    if (key === "managerId" || key === "managerIds") {
+      const ids = (Array.isArray(out.managerIds) ? out.managerIds : []).slice();
+      const newIds = String(value)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      out.managerIds = Array.from(new Set(ids.concat(newIds)));
+      continue;
+    }
+
+    if (key === "managerEmail" || key === "managerEmails") {
+      const emails = (
+        Array.isArray(out.managerEmails) ? out.managerEmails : []
+      ).slice();
+      const newEmails = String(value)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      out.managerEmails = Array.from(new Set(emails.concat(newEmails)));
+      continue;
+    }
+
+    out[key] = value === "true" ? true : value === "false" ? false : value;
+  }
   return out;
 }
 
 (async () => {
   const argv = parseArgs();
-  const managerId = argv.managerId;
-  const managerEmail = argv.managerEmail;
-  const statusFilter = argv.status; // e.g. "PING_1"
-  const doYes = !!argv.yes; // must be present to actually delete
-  const dryRunFlag = argv.dryRun || !doYes;
+  const doYes = !!argv.yes;
+  const dryRun = !!argv.dryRun || !doYes;
+  const statusFilter = argv.status || null;
+  const deleteAllFlag = !!argv.all;
+
+  let managerIds = Array.isArray(argv.managerIds) ? argv.managerIds : [];
+  const managerEmails = Array.isArray(argv.managerEmails)
+    ? argv.managerEmails
+    : [];
 
   try {
-    let managerUserId = managerId;
-
-    if (!managerUserId && !managerEmail) {
+    if (managerEmails.length === 0 && managerIds.length === 0) {
       console.error(
-        "ERROR: must provide either --managerId=<USER_ID> or --managerEmail=<EMAIL>"
+        "ERROR: Provide --managerId or --managerIds or --managerEmail(s)."
       );
       process.exit(2);
     }
 
-    if (!managerUserId && managerEmail) {
-      const user = await prisma.user.findUnique({
-        where: { email: managerEmail },
+    // Resolve manager emails to ids if provided
+    if (managerEmails.length > 0) {
+      const users = await prisma.user.findMany({
+        where: { email: { in: managerEmails } },
         select: { id: true, email: true },
       });
-      if (!user) {
-        console.error(`ERROR: no user found with email ${managerEmail}`);
-        process.exit(3);
+      const found = users.map((u) => u.id);
+      if (found.length !== managerEmails.length) {
+        const foundEmails = new Set(users.map((u) => u.email));
+        const missing = managerEmails.filter((e) => !foundEmails.has(e));
+        console.warn("Warning: some manager emails not found:", missing);
       }
-      managerUserId = user.id;
-      console.log(
-        `Found manager user id ${managerUserId} for email ${managerEmail}`
-      );
+      managerIds = Array.from(new Set(managerIds.concat(found)));
     }
 
-    console.log(
-      "Gathering influencer IDs from emails sent by manager:",
-      managerUserId
-    );
-
-    // find influencer ids referenced by emails sent by this manager
-    const emailRows = await prisma.email.findMany({
-      where: { sentById: managerUserId },
-      select: { influencerId: true },
-      distinct: ["influencerId"],
-    });
-
-    const influencerIdsFromEmails = Array.from(
-      new Set(emailRows.map((r) => r.influencerId).filter(Boolean))
-    );
-
-    if (influencerIdsFromEmails.length === 0) {
-      console.log(
-        "No influencer IDs found in emails sent by this manager. Nothing to delete."
-      );
-      process.exit(0);
+    if (managerIds.length === 0) {
+      console.error("ERROR: No manager IDs resolved. Aborting.");
+      process.exit(3);
     }
 
-    console.log(
-      `Found ${influencerIdsFromEmails.length} influencerIds referenced in emails.`
-    );
+    console.log("Manager IDs to operate on:", managerIds);
 
-    // optionally restrict to influencers with a specific status
-    const influencerWhere = {
-      id: { in: influencerIdsFromEmails },
-      ...(statusFilter ? { status: statusFilter } : {}),
-    };
+    // Build influencer filter based on flags
+    let influencerWhere;
+    if (deleteAllFlag) {
+      influencerWhere = { managerId: { in: managerIds } };
+      if (statusFilter) influencerWhere.status = statusFilter;
+    } else {
+      // original behavior: only influencers referenced by emails sent by manager(s)
+      const emailRows = await prisma.email.findMany({
+        where: { sentById: { in: managerIds } },
+        select: { influencerId: true },
+        distinct: ["influencerId"],
+      });
+      const influencerIdsFromEmails = Array.from(
+        new Set(emailRows.map((r) => r.influencerId).filter(Boolean))
+      );
+      if (influencerIdsFromEmails.length === 0) {
+        console.log(
+          "No influencer IDs found in emails sent by these manager(s). Nothing to delete."
+        );
+        process.exit(0);
+      }
+      influencerWhere = { id: { in: influencerIdsFromEmails } };
+      if (statusFilter) influencerWhere.status = statusFilter;
+    }
 
+    // get influencers matching criteria
     const influencers = await prisma.influencer.findMany({
       where: influencerWhere,
       select: {
@@ -99,71 +140,72 @@ function parseArgs() {
         name: true,
         email: true,
         status: true,
-        lastContactDate: true,
+        managerId: true,
+        createdAt: true,
       },
+      orderBy: { createdAt: "desc" },
     });
 
-    if (influencers.length === 0) {
-      console.log(
-        `No influencers matched the criteria (manager's emailed influencers${
-          statusFilter ? ` + status=${statusFilter}` : ""
-        }). Nothing to delete.`
-      );
+    if (!influencers || influencers.length === 0) {
+      console.log("No influencers matched the criteria. Nothing to delete.");
       process.exit(0);
     }
 
-    console.log(
-      `Would delete ${influencers.length} influencers (matching criteria):`
-    );
-    influencers.slice(0, 50).forEach((inf, idx) => {
+    console.log(`Matched influencers: ${influencers.length}`);
+    influencers.slice(0, 50).forEach((inf, i) => {
       console.log(
-        `${idx + 1}. id=${inf.id} name=${inf.name} email=${inf.email} status=${
-          inf.status
-        }`
+        `${i + 1}. id=${inf.id} name=${inf.name || "<no-name>"} email=${
+          inf.email || "<no-email>"
+        } status=${inf.status} managerId=${inf.managerId}`
       );
     });
     if (influencers.length > 50) {
       console.log(`... and ${influencers.length - 50} more`);
     }
 
-    // show counts of related emails (for info)
-    const emailsCount = await prisma.email.count({
-      where: { influencerId: { in: influencers.map((i) => i.id) } },
+    const influencerIds = influencers.map((i) => i.id);
+
+    const emailCount = await prisma.email.count({
+      where: { influencerId: { in: influencerIds } },
     });
+    console.log(`Related email records that would be deleted: ${emailCount}`);
 
-    console.log(`Related email records to be deleted: ${emailsCount}`);
-
-    if (dryRunFlag) {
+    if (dryRun) {
       console.log(
-        "Dry run (no deletion). Re-run with --yes to perform deletion. Example:\n" +
-          "  node delete-influencers.js --managerId=USER_ID --status=PING_1 --yes"
+        "DRY RUN: No deletion performed. Re-run with --yes to execute the deletion."
+      );
+      console.log("Example (delete all influencers for managers):");
+      console.log(
+        "  node delete-influencers.js --managerIds=" +
+          managerIds.join(",") +
+          " --all --yes"
       );
       process.exit(0);
     }
 
-    // Confirmation already required by --yes; proceed to delete
-    console.log("Deleting related emails first...");
+    // Perform deletes inside transaction for consistency
+    console.log("Performing deletion (emails first, then influencers)...");
+    const results = await prisma.$transaction([
+      prisma.email.deleteMany({
+        where: { influencerId: { in: influencerIds } },
+      }),
+      prisma.influencer.deleteMany({ where: { id: { in: influencerIds } } }),
+    ]);
 
-    const deleteEmailsResult = await prisma.email.deleteMany({
-      where: { influencerId: { in: influencers.map((i) => i.id) } },
-    });
+    // results is an array with counts: [ { count: nEmailsDeleted }, { count: nInfluencersDeleted } ]
+    const deletedEmails =
+      results[0] && results[0].count != null ? results[0].count : results[0];
+    const deletedInfluencers =
+      results[1] && results[1].count != null ? results[1].count : results[1];
 
-    console.log(`Deleted ${deleteEmailsResult.count} email rows.`);
-
-    console.log("Deleting influencers...");
-
-    const deleteInfluencersResult = await prisma.influencer.deleteMany({
-      where: { id: { in: influencers.map((i) => i.id) } },
-    });
-
-    console.log(`Deleted ${deleteInfluencersResult.count} influencer rows.`);
-
-    console.log("Done. Consider vacuuming / optimizing DB if needed.");
+    console.log(`Deleted emails: ${deletedEmails}`);
+    console.log(`Deleted influencers: ${deletedInfluencers}`);
+    console.log("Deletion complete.");
 
     await prisma.$disconnect();
     process.exit(0);
   } catch (err) {
-    console.error("Fatal error during deletion script:", err);
+    console.error("Fatal error:", err && err.message ? err.message : err);
     try {
       await prisma.$disconnect();
     } catch (_) {}

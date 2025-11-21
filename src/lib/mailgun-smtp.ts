@@ -8,9 +8,13 @@ import nodemailer from "nodemailer";
  * - MAILGUN_SMTP_SECURE (optional; "true"|"false")
  * - MAILGUN_SMTP_USER
  * - MAILGUN_SMTP_PASSWORD
+ * - MAILGUN_SMTP_POOL (optional; "true"|"false")
+ * - MAILGUN_SMTP_MAX_CONNECTIONS (optional; number)
+ * - MAILGUN_SMTP_MAX_MESSAGES (optional; number)
+ * - MAILGUN_SMTP_TIMEOUT_MS (optional; number)
  * - SMTP_TLS_REJECT_UNAUTHORIZED (optional)
- * If SMTP_TLS_REJECT_UNAUTHORIZED is absent we fall back to REDIS_TLS_REJECT_UNAUTHORIZED
- * (you already have that set in your .env files).
+ *
+ * This module returns { success: true, info } similar to the prior implementation.
  */
 
 const host = process.env.MAILGUN_SMTP_HOST;
@@ -20,6 +24,13 @@ const secure =
   secureEnv === "true" ? true : secureEnv === "false" ? false : port === 465;
 const user = process.env.MAILGUN_SMTP_USER;
 const pass = process.env.MAILGUN_SMTP_PASSWORD;
+
+const poolEnv = String(process.env.MAILGUN_SMTP_POOL ?? "true").toLowerCase();
+const pool = poolEnv === "true";
+
+const maxConnections = Number(process.env.MAILGUN_SMTP_MAX_CONNECTIONS || 5);
+const maxMessages = Number(process.env.MAILGUN_SMTP_MAX_MESSAGES || 1000);
+const smtpTimeout = Number(process.env.MAILGUN_SMTP_TIMEOUT_MS || 20000);
 
 // Prefer dedicated SMTP_TLS_REJECT_UNAUTHORIZED, otherwise fall back to REDIS_TLS_REJECT_UNAUTHORIZED
 const tlsRejectStr =
@@ -34,6 +45,13 @@ if (!host || !user || !pass) {
   );
 }
 
+/**
+ * sendViaSmtp(opts)
+ * - opts.to, opts.subject, opts.html
+ * - optional opts.from, opts.replyTo, opts.headers
+ *
+ * Returns: { success: true, info } or throws.
+ */
 export const sendViaSmtp = async (opts: {
   to: string;
   subject: string;
@@ -46,26 +64,42 @@ export const sendViaSmtp = async (opts: {
     throw new Error("SMTP credentials missing");
   }
 
+  // Create transporter with pooling enabled by default for better throughput
   const transporter = nodemailer.createTransport({
     host,
     port,
-    secure, // true for 465, false for 587 (STARTTLS)
+    secure,
     auth: { user, pass },
+    pool: pool,
+    maxConnections: pool
+      ? Math.max(1, Math.min(10, maxConnections))
+      : undefined,
+    maxMessages: pool ? Math.max(1, maxMessages) : undefined,
     tls: { rejectUnauthorized: tlsReject },
-  });
+    socketTimeout: smtpTimeout,
+    connectionTimeout: smtpTimeout,
+  } as any);
 
   // Verify connection/auth — helpful during startup/test
   try {
     await transporter.verify();
-    console.log("[mailgun-smtp] SMTP transporter verified OK");
+    console.log("[mailgun-smtp] SMTP transporter verified OK", {
+      host,
+      port,
+      pool,
+      maxConnections,
+      smtpTimeout,
+    });
   } catch (verifyErr) {
+    // Log a warning but don't fail outright — fallback caller can handle send error
     console.warn("[mailgun-smtp] transporter.verify() warning:", verifyErr);
-    // don't throw — caller may want to attempt fallback or surface the error
   }
 
-  // Generate headers for better Gmail deliverability
+  // Generate headers for better deliverability (Message-ID, List-Unsubscribe)
   const domain = process.env.MAILGUN_DOMAIN || "mail.imx.agency";
-  const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+  const uniqueId = `${Date.now()}-${Math.random()
+    .toString(36)
+    .substring(2, 15)}`;
   const messageId = `<${uniqueId}@${domain}>`;
 
   const enhancedHeaders: Record<string, string> = {
@@ -77,10 +111,11 @@ export const sendViaSmtp = async (opts: {
     ...opts.headers,
   };
 
-  const info = await transporter.sendMail({
+  // Wrap sendMail in a promise that enforces a hard timeout as a safety fallback
+  const sendPromise = transporter.sendMail({
     from:
       opts.from ||
-      `"${process.env.MAILGUN_FROM_NAME || "Influencer CRM"}" <${
+      `"${process.env.MAILGUN_FROM_NAME || "Influencer CRM Auto Mail"}" <${
         process.env.MAILGUN_FROM_EMAIL || user
       }>`,
     to: opts.to,
@@ -91,6 +126,14 @@ export const sendViaSmtp = async (opts: {
     messageId: messageId,
   });
 
-  // Return the nodemailer info object — caller (mailgun-client) will inspect info.messageId or info.response
+  const timeoutMs = smtpTimeout || 20000;
+  const timed = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("SMTP send timeout")), timeoutMs)
+  );
+
+  // Race send vs timeout
+  const info = (await Promise.race([sendPromise, timed])) as any;
+
+  // nodemailer returns an info object; keep callers' expectations
   return { success: true, info };
 };

@@ -66,6 +66,29 @@ type SendResult = {
 const isEmailValid = (email: string) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
 
+const normalizeError = (x: any) => {
+  try {
+    if (!x) return "Unknown error";
+    if (typeof x === "string") return x;
+    if (x instanceof Error) return x.message;
+    if (x?.response?.data) {
+      if (typeof x.response.data === "string") return x.response.data;
+      try {
+        return JSON.stringify(x.response.data);
+      } catch {
+        return String(x.response.data);
+      }
+    }
+    try {
+      return JSON.stringify(x);
+    } catch {
+      return String(x);
+    }
+  } catch {
+    return "Unknown error";
+  }
+};
+
 export const sendMailgunEmail = async (opts: {
   to: string;
   subject: string;
@@ -86,7 +109,7 @@ export const sendMailgunEmail = async (opts: {
 
   const fromHeader = buildFrom();
 
-  // If API config missing, attempt SMTP fallback early
+  // Early SMTP fallback when API config missing
   if (!API_KEY || !DOMAIN) {
     const msg = "Mailgun API key or domain missing in environment";
     console.error("[mailgun-client] " + msg);
@@ -132,27 +155,26 @@ export const sendMailgunEmail = async (opts: {
   form.append("subject", opts.subject);
   form.append("html", opts.html);
 
-  // Add headers that improve Gmail deliverability
   if (opts.replyTo) form.append("h:Reply-To", opts.replyTo);
 
-  // Generate a unique Message-ID to help Gmail track the email
+  // Generate a unique Message-ID to help tracking
   const messageIdDomain = DOMAIN || "mail.imx.agency";
-  const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+  const uniqueId = `${Date.now()}-${Math.random()
+    .toString(36)
+    .substring(2, 15)}`;
   form.append("h:Message-ID", `<${uniqueId}@${messageIdDomain}>`);
 
-  // Add Date header (RFC 2822 format)
   form.append("h:Date", new Date().toUTCString());
-
-  // Add MIME headers for better compatibility
   form.append("h:MIME-Version", "1.0");
   form.append("h:Content-Type", "text/html; charset=UTF-8");
 
-  // Add List-Unsubscribe header (helps with spam score)
   if (opts.replyTo) {
-    form.append("h:List-Unsubscribe", `<mailto:${opts.replyTo}?subject=Unsubscribe>`);
+    form.append(
+      "h:List-Unsubscribe",
+      `<mailto:${opts.replyTo}?subject=Unsubscribe>`
+    );
   }
 
-  // Add custom headers
   if (opts.headers) {
     for (const [k, v] of Object.entries(opts.headers)) {
       form.append(`h:${k}`, v);
@@ -167,14 +189,106 @@ export const sendMailgunEmail = async (opts: {
     replyTo: opts.replyTo,
   });
 
-  try {
-    const res = await axios.post(url, form.toString(), {
-      auth: { username: "api", password: API_KEY },
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      timeout: 20000,
-    });
+  // Retry/backoff configuration (from env or defaults)
+  const MAX_RETRIES = Math.max(1, Number(process.env.MAILGUN_MAX_RETRIES || 5));
+  const BASE_DELAY_MS = Math.max(
+    100,
+    Number(process.env.MAILGUN_BASE_DELAY_MS || 1000)
+  );
+  const MAX_DELAY_MS = Math.max(
+    1000,
+    Number(process.env.MAILGUN_MAX_DELAY_MS || 60000)
+  );
 
-    // Mailgun usually returns: { id: "<...>", message: "Queued. Thank you." }
+  const postWithRetries = async () => {
+    let attempt = 0;
+    while (attempt < MAX_RETRIES) {
+      attempt++;
+      try {
+        const res = await axios.post(url, form.toString(), {
+          auth: { username: "api", password: API_KEY },
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          timeout: 20000,
+        });
+        return res;
+      } catch (err: any) {
+        const status = err?.response?.status;
+        const respData = err?.response?.data;
+        let recommendedDelaySec: number | null = null;
+
+        // Try to parse provider suggested retry_seconds if present
+        try {
+          if (respData && typeof respData === "object") {
+            if (
+              respData["delivery-status"] &&
+              respData["delivery-status"].retry_seconds
+            ) {
+              recommendedDelaySec = Number(
+                respData["delivery-status"].retry_seconds
+              );
+            } else if (respData.retry_seconds) {
+              recommendedDelaySec = Number(respData.retry_seconds);
+            }
+          }
+        } catch {
+          recommendedDelaySec = null;
+        }
+
+        const isTransient =
+          !status ||
+          status === 421 ||
+          status === 429 ||
+          (status >= 500 && status < 600);
+
+        // On permanent 4xx (other than 421/429) don't retry
+        if (!isTransient) {
+          // rethrow - higher level will attempt SMTP fallback
+          throw err;
+        }
+
+        // Logging for transient errors
+        const msg =
+          respData && typeof respData === "object"
+            ? JSON.stringify(respData)
+            : err?.message;
+        console.warn(
+          `[mailgun-client] transient send error (attempt ${attempt}/${MAX_RETRIES})`,
+          {
+            status,
+            message: msg,
+            recommendedDelaySec,
+          }
+        );
+
+        // compute delay
+        let delayMs: number;
+        if (recommendedDelaySec && Number.isFinite(recommendedDelaySec)) {
+          delayMs = Math.min(
+            MAX_DELAY_MS,
+            Math.floor(recommendedDelaySec * 1000)
+          );
+        } else {
+          delayMs = Math.min(
+            MAX_DELAY_MS,
+            Math.round(BASE_DELAY_MS * Math.pow(2, attempt - 1))
+          );
+        }
+        // jitter 0-500ms
+        delayMs += Math.floor(Math.random() * 500);
+
+        // last attempt -> break and throw
+        if (attempt >= MAX_RETRIES) break;
+
+        await new Promise((r) => setTimeout(r, delayMs));
+        // continue to retry
+      }
+    }
+    throw new Error("Mailgun post failed after retries");
+  };
+
+  try {
+    const res = await postWithRetries();
+
     const rawId = res.data?.id || res.data?.messageId || undefined;
     const normalizedId =
       typeof rawId === "string" ? rawId.replace(/[<>]/g, "").trim() : undefined;
@@ -199,7 +313,7 @@ export const sendMailgunEmail = async (opts: {
     }
 
     console.error(
-      "[mailgun-client] Mailgun API send error:",
+      "[mailgun-client] Mailgun API send error (after retries):",
       responseData || err?.message || err
     );
 

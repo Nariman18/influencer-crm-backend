@@ -708,6 +708,7 @@ export const addBulkEmailJobs = async (
     "yahoo.gr": 20,
     "gmail.com": 5,
     "mail.ru": 5,
+    "panikrecords.gr": 20,
   };
 
   const domainFor = (email: string) =>

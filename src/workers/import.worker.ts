@@ -337,8 +337,8 @@ export const startImportWorker = () => {
             ExcelJS as any
           ).stream.xlsx.WorkbookReader(localFilePath, {
             entries: "emit",
-            sharedStrings: "cache",
-            hyperlinks: "emit",
+            sharedStrings: "emit",
+            hyperlinks: "ignore",
             worksheets: "emit",
           });
 
@@ -474,8 +474,8 @@ export const startImportWorker = () => {
             ExcelJS as any
           ).stream.xlsx.WorkbookReader(localFilePath, {
             entries: "emit",
-            sharedStrings: "cache",
-            hyperlinks: "emit",
+            sharedStrings: "emit",
+            hyperlinks: "ignore",
             worksheets: "emit",
           });
 

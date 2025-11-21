@@ -131,7 +131,28 @@ export const sendMailgunEmail = async (opts: {
   form.append("to", opts.to);
   form.append("subject", opts.subject);
   form.append("html", opts.html);
+
+  // Add headers that improve Gmail deliverability
   if (opts.replyTo) form.append("h:Reply-To", opts.replyTo);
+
+  // Generate a unique Message-ID to help Gmail track the email
+  const messageIdDomain = DOMAIN || "mail.imx.agency";
+  const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+  form.append("h:Message-ID", `<${uniqueId}@${messageIdDomain}>`);
+
+  // Add Date header (RFC 2822 format)
+  form.append("h:Date", new Date().toUTCString());
+
+  // Add MIME headers for better compatibility
+  form.append("h:MIME-Version", "1.0");
+  form.append("h:Content-Type", "text/html; charset=UTF-8");
+
+  // Add List-Unsubscribe header (helps with spam score)
+  if (opts.replyTo) {
+    form.append("h:List-Unsubscribe", `<mailto:${opts.replyTo}?subject=Unsubscribe>`);
+  }
+
+  // Add custom headers
   if (opts.headers) {
     for (const [k, v] of Object.entries(opts.headers)) {
       form.append(`h:${k}`, v);

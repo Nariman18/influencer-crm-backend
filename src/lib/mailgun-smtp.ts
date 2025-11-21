@@ -63,6 +63,20 @@ export const sendViaSmtp = async (opts: {
     // don't throw — caller may want to attempt fallback or surface the error
   }
 
+  // Generate headers for better Gmail deliverability
+  const domain = process.env.MAILGUN_DOMAIN || "mail.imx.agency";
+  const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+  const messageId = `<${uniqueId}@${domain}>`;
+
+  const enhancedHeaders: Record<string, string> = {
+    "Message-ID": messageId,
+    "MIME-Version": "1.0",
+    ...(opts.replyTo && {
+      "List-Unsubscribe": `<mailto:${opts.replyTo}?subject=Unsubscribe>`,
+    }),
+    ...opts.headers,
+  };
+
   const info = await transporter.sendMail({
     from:
       opts.from ||
@@ -73,7 +87,8 @@ export const sendViaSmtp = async (opts: {
     subject: opts.subject,
     html: opts.html,
     replyTo: opts.replyTo,
-    headers: opts.headers,
+    headers: enhancedHeaders,
+    messageId: messageId,
   });
 
   // Return the nodemailer info object — caller (mailgun-client) will inspect info.messageId or info.response

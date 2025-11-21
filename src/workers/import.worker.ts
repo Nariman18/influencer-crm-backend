@@ -78,77 +78,82 @@ const normalizeHeader = (h: any) => {
   }
 };
 
-const normalizeCellValue = (v: any): string | number | null => {
-  if (v === null || v === undefined) return null;
-  if (typeof v === "string") return v.trim();
-  if (typeof v === "number") return v;
+/**
+ * Extract plain text from any ExcelJS cell value, stripping all formatting
+ * (fonts, sizes, colors, etc.) and returning only the text content.
+ */
+const extractPlainText = (v: any): string => {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return String(v);
   if (typeof v === "boolean") return v ? "true" : "false";
+  if (v instanceof Date) return v.toISOString();
 
-  try {
-    if (v && typeof v === "object") {
-      if ("text" in v && typeof v.text === "string") {
-        return v.text.trim();
-      }
-
-      if ("richText" in v && Array.isArray(v.richText)) {
-        return (
-          v.richText
-            .map((seg: any) =>
-              seg && typeof seg.text === "string" ? seg.text : String(seg || "")
-            )
-            .join("")
-            .trim() || null
-        );
-      }
-
-      if ("result" in v) {
-        return normalizeCellValue(v.result);
-      }
-
-      if (v instanceof Date) return v.toISOString();
-
-      if (Array.isArray(v)) {
-        const mapped = v
-          .map((x) => {
-            if (x === null || x === undefined) return "";
-            if (typeof x === "object") {
-              if ("text" in x && typeof x.text === "string") return x.text;
-              if ("richText" in x && Array.isArray(x.richText)) {
-                return x.richText
-                  .map((s: any) => (s?.text ? String(s.text) : ""))
-                  .join("");
-              }
-              try {
-                const s = JSON.stringify(x);
-                return s && s.length < 500 ? s : "";
-              } catch {
-                return "";
-              }
-            }
-            return String(x);
-          })
-          .join(" ")
-          .trim();
-        return mapped || null;
-      }
-
-      if (typeof v.toString === "function") {
-        const s = v.toString();
-        if (s && s !== "[object Object]") return s.trim();
-      }
-
-      try {
-        const small = JSON.stringify(v);
-        if (small && small.length < 500) return small;
-      } catch {
-        // noop
-      }
+  if (typeof v === "object") {
+    // ExcelJS richText format: { richText: [{ text: "...", font: {...} }, ...] }
+    if ("richText" in v && Array.isArray(v.richText)) {
+      return v.richText
+        .map((seg: any) => {
+          if (!seg) return "";
+          // Extract only text, ignore font/size/color properties
+          if (typeof seg === "string") return seg;
+          if (typeof seg.text === "string") return seg.text;
+          return "";
+        })
+        .join("");
     }
-  } catch {
-    // noop
+
+    // Simple text object: { text: "..." }
+    if ("text" in v && typeof v.text === "string") {
+      return v.text;
+    }
+
+    // Formula result
+    if ("result" in v) {
+      return extractPlainText(v.result);
+    }
+
+    // Hyperlink object: { text: "...", hyperlink: "..." }
+    if ("hyperlink" in v && "text" in v) {
+      return typeof v.text === "string" ? v.text : "";
+    }
+
+    // Array of values
+    if (Array.isArray(v)) {
+      return v.map((item) => extractPlainText(item)).join(" ");
+    }
+
+    // Try toString as last resort
+    if (typeof v.toString === "function") {
+      const s = v.toString();
+      if (s && s !== "[object Object]") return s;
+    }
   }
 
-  return null;
+  return "";
+};
+
+const normalizeCellValue = (v: any): string | number | null => {
+  if (v === null || v === undefined) return null;
+
+  // For numbers, return as-is
+  if (typeof v === "number") return v;
+
+  // Extract plain text from any complex format
+  const plainText = extractPlainText(v).trim();
+
+  // Return null for empty strings
+  if (!plainText) return null;
+
+  // Clean up any remaining formatting artifacts
+  // Remove zero-width characters, control characters, etc.
+  const cleaned = plainText
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // Zero-width characters
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "") // Control characters
+    .replace(/\s+/g, " ") // Normalize whitespace
+    .trim();
+
+  return cleaned || null;
 };
 
 const normalizeParsedRow = (r: ParsedRow): ParsedRow => {
@@ -403,13 +408,7 @@ export const startImportWorker = () => {
               }
 
               parsed = normalizeParsedRow(parsed);
-
-              if (!parsed.instagramHandle) {
-                missingHandles.push({
-                  row: validationRowIndex,
-                  reason: "Missing instagram handle",
-                });
-              }
+              // No longer blocking on missing instagramHandle - will import with empty handle
             }
             break; // only first worksheet
           }
@@ -420,9 +419,11 @@ export const startImportWorker = () => {
           });
         }
 
-        if (missingHandles.length > 0) {
-          const errEntries = missingHandles.map((m) =>
-            m.row === -1 ? { error: m.reason } : { row: m.row, error: m.reason }
+        // Only fail on critical validation errors, not missing handles
+        const criticalErrors = missingHandles.filter(m => m.row === -1);
+        if (criticalErrors.length > 0) {
+          const errEntries = criticalErrors.map((m) =>
+            ({ error: m.reason })
           );
           try {
             await prisma.importJob.update({
@@ -437,7 +438,7 @@ export const startImportWorker = () => {
           }
 
           await emit({
-            error: "Validation failed: missing instagram handles",
+            error: "Validation failed",
             failed: true,
             details: errEntries,
           });
@@ -689,56 +690,7 @@ export const startImportWorker = () => {
                   parsed.notes = `${parsed.notes}\n${append}`;
               }
 
-              if (!parsed.instagramHandle) {
-                failed++;
-                errors.push({
-                  row: processed + 1,
-                  error: "Missing instagram handle",
-                });
-                if (processed % STATUS_CHECK_INTERVAL === 0) {
-                  await job.updateProgress({
-                    processed,
-                    success,
-                    failed,
-                  } as any);
-                  await emit({
-                    processed,
-                    success,
-                    failed,
-                    duplicatesCount: duplicates.length,
-                  });
-                  const cancelled = await (async () => {
-                    try {
-                      const j = await prisma.importJob.findUnique({
-                        where: { id: importJobId },
-                        select: { status: true },
-                      });
-                      return !!j && j.status === "FAILED";
-                    } catch {
-                      return false;
-                    }
-                  })();
-                  if (cancelled) {
-                    try {
-                      await prisma.importJob.update({
-                        where: { id: importJobId },
-                        data: {
-                          status: "FAILED",
-                          errors: [{ error: "Cancelled by user" }] as any,
-                        },
-                      });
-                    } catch {}
-                    await emit({ error: "Cancelled by user", failed: true });
-                    try {
-                      if (downloadedTemp)
-                        await fs.promises.unlink(localFilePath);
-                    } catch {}
-                    return { processed, success, failed, duplicates, errors };
-                  }
-                }
-                continue;
-              }
-
+              // Allow rows with missing instagramHandle - they will be imported with empty handle
               buffer.push(parsed);
               if (buffer.length >= BATCH_SIZE) await flush();
 

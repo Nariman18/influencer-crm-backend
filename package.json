@@ -11,7 +11,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "prisma:studio": "dotenv -e .env.server -- prisma studio",
+    "prisma:studio": "dotenv -e .env -- prisma studio",
     "import:excel": "node scripts/importExcel.js",
     "import:multipleExcel": "node scripts/importMultipleExcel.js",
     "seed:managers": "node scripts/seedManagers.js"
@@ -21,7 +21,8 @@
   "license": "ISC",
   "description": "Backend API for Influencer CRM",
   "dependencies": {
-    "@prisma/client": "^6.18.0",
+    "@google-cloud/storage": "^7.17.3",
+    "@prisma/client": "^6.19.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.5",
@@ -48,7 +49,8 @@
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.10",
-    "prisma": "^6.18.0",
+    "pg": "^8.16.3",
+    "prisma": "^6.19.0",
     "socket.io": "^4.8.1",
     "ws": "^8.18.3",
     "xlsx": "^0.18.5"

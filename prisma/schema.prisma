@@ -103,6 +103,7 @@ model ImportJob {
   managerId   String
   filename    String
   filePath    String?
+  fileUrl     String?  
   status      String   @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED
   totalRows   Int?
   successCount Int?

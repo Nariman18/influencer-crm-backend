@@ -74,3 +74,8 @@ Thumbs.db
 # ============================================
 .cache/
 .eslintcache
+/src/json-gsc-key/
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json

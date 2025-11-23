@@ -77,7 +77,8 @@ const normalizeMessageId = (v?: string | null): string | null => {
 };
 
 /**
- * Check candidate Gmail message headers to determine whether it is a reply to the original message.
+ * ✅ FIXED: Check candidate Gmail message headers with STRICT validation
+ * to prevent false "REPLIED" statuses
  */
 const isReplyToOriginal = (
   candidateHeaders: { [k: string]: string | undefined },
@@ -85,44 +86,90 @@ const isReplyToOriginal = (
   influencerEmail: string | null,
   userGmailAddress: string | null,
   sentAt?: Date | null,
-  afterBufferSeconds = 30
+  originalSubject?: string | null
 ): boolean => {
   const hdr = (key: string) =>
     candidateHeaders[key.toLowerCase()] || candidateHeaders[key] || undefined;
 
-  // header values of interest
   const from = (hdr("From") || "").toLowerCase();
   const to = (hdr("To") || hdr("Delivered-To") || "").toLowerCase();
+  const subject = (hdr("Subject") || "").toLowerCase();
   const inReplyTo = (hdr("In-Reply-To") || "").trim();
   const references = (hdr("References") || "").trim();
   const msgid = normalizeMessageId(hdr("Message-ID") || hdr("Message-Id"));
 
-  // If we have original message-id, check In-Reply-To/References for inclusion
+  // ✅ STRICT CHECK 1: Message-ID matching (most reliable)
   if (originalMidNoAngle) {
     const inReplyNorm = normalizeMessageId(inReplyTo) || null;
     if (inReplyTo && inReplyNorm && inReplyNorm.includes(originalMidNoAngle)) {
+      console.log("[followup] ✓ Valid reply detected via In-Reply-To:", {
+        originalMid: originalMidNoAngle,
+        inReplyTo: inReplyNorm,
+      });
       return true;
     }
 
     if (references) {
       const parts = references.split(/\s+/).map((r) => normalizeMessageId(r));
-      if (parts.some((r) => r && r === originalMidNoAngle)) return true;
-    }
-
-    if (msgid && msgid === originalMidNoAngle) {
-      return true;
-    }
-  }
-
-  // If message-id matching not available, check From/To/Subject/Time as a fallback:
-  if (influencerEmail && from.includes(influencerEmail.toLowerCase())) {
-    if (userGmailAddress && to.includes(userGmailAddress.toLowerCase())) {
-      if (inReplyTo || references) return true;
-      return true; // last-resort heuristic
+      if (parts.some((r) => r && r === originalMidNoAngle)) {
+        console.log("[followup] ✓ Valid reply detected via References:", {
+          originalMid: originalMidNoAngle,
+          references: parts,
+        });
+        return true;
+      }
     }
   }
 
-  return false;
+  // ✅ STRICT CHECK 2: Must have proper reply headers OR subject match
+  const hasReplyHeaders = !!(inReplyTo || references);
+  const hasReplySubject = originalSubject
+    ? subject.includes(originalSubject.toLowerCase()) ||
+      subject.startsWith("re:")
+    : false;
+
+  // ✅ STRICT CHECK 3: Basic from/to validation
+  const validFrom =
+    influencerEmail && from.includes(influencerEmail.toLowerCase());
+  const validTo =
+    userGmailAddress && to.includes(userGmailAddress.toLowerCase());
+
+  // ❌ REJECT if doesn't have reply indicators
+  if (!hasReplyHeaders && !hasReplySubject) {
+    console.debug("[followup] ✗ Candidate REJECTED - lacks reply indicators:", {
+      hasInReplyTo: !!inReplyTo,
+      hasReferences: !!references,
+      hasReplySubject,
+      subject: subject.substring(0, 50),
+      from: from.substring(0, 50),
+    });
+    return false;
+  }
+
+  // ✅ Accept only if has reply indicators + valid from/to
+  const isValid = !!(
+    validFrom &&
+    validTo &&
+    (hasReplyHeaders || hasReplySubject)
+  );
+
+  if (isValid) {
+    console.log("[followup] ✓ Valid reply detected via headers/subject:", {
+      hasReplyHeaders,
+      hasReplySubject,
+      from: from.substring(0, 50),
+      subject: subject.substring(0, 50),
+    });
+  } else {
+    console.debug("[followup] ✗ Candidate REJECTED - failed validation:", {
+      validFrom,
+      validTo,
+      hasReplyHeaders,
+      hasReplySubject,
+    });
+  }
+
+  return isValid;
 };
 
 const extractHeaders = (msg: any) => {
@@ -137,6 +184,13 @@ const extractHeaders = (msg: any) => {
 
 export const checkForReplyAndHandle = async (jobData: any) => {
   const { influencerId, emailRecordId, step = 1, userId } = jobData;
+
+  console.log("[followup] Starting reply check:", {
+    influencerId,
+    emailRecordId,
+    step,
+    userId,
+  });
 
   const emailRecord = await prisma.email.findUnique({
     where: { id: emailRecordId },
@@ -172,6 +226,14 @@ export const checkForReplyAndHandle = async (jobData: any) => {
 
   const influencerEmail = emailRecord.influencer?.email || null;
   const userGmailAddress = user.googleEmail || user.email || null;
+
+  console.log("[followup] Search parameters:", {
+    mailgunMessageIdNormalized,
+    influencerEmail,
+    userGmailAddress,
+    originalSubject: emailRecord.subject?.substring(0, 50),
+    sentAt: emailRecord.sentAt?.toISOString(),
+  });
 
   const afterEpochBufferSec = 30;
   let afterEpoch: number | null = null;
@@ -236,25 +298,26 @@ export const checkForReplyAndHandle = async (jobData: any) => {
     const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
     let queriesTried: string[] = [];
+
+    // First attempt: Search by Message-ID (most accurate)
     if (mailgunMessageIdNormalized) {
       const q =
         `rfc822msgid:${mailgunMessageIdNormalized}` +
         (afterEpoch ? ` after:${afterEpoch}` : "");
       queriesTried.push(q);
-      console.debug("[followup] trying Gmail query (rfc822msgid):", q);
+      console.log("[followup] Trying Gmail query (rfc822msgid):", q);
 
       try {
         const listResp = await gmail.users.messages.list({
           userId: "me",
-          q: `from:${influencerEmail} to:${userGmailAddress}`,
+          q,
           maxResults: 50,
         });
         const candidates = listResp.data.messages || [];
         console.log(
-          "[followup] Gmail.list (rfc822msgid) resultSizeEstimate:",
-          listResp.data.resultSizeEstimate,
-          "candidates:",
-          candidates.length
+          "[followup] Gmail.list (rfc822msgid) found:",
+          candidates.length,
+          "candidates"
         );
 
         if (candidates.length > 0) {
@@ -266,30 +329,18 @@ export const checkForReplyAndHandle = async (jobData: any) => {
                 format: "metadata",
               });
               const headersMap = extractHeaders(getResp.data);
+
               const valid = isReplyToOriginal(
                 headersMap,
                 mailgunMessageIdNormalized,
                 influencerEmail,
                 userGmailAddress,
-                emailRecord.sentAt || null
-              );
-
-              console.debug(
-                "[followup] candidate headers (rfc822msgid) checked:",
-                {
-                  candidateId: c.id,
-                  valid,
-                  headersSample: {
-                    from: headersMap["from"],
-                    to: headersMap["to"] || headersMap["delivered-to"],
-                    inReplyTo: headersMap["in-reply-to"],
-                    references: headersMap["references"],
-                    messageId: headersMap["message-id"],
-                  },
-                }
+                emailRecord.sentAt || null,
+                emailRecord.subject || null
               );
 
               if (valid) {
+                console.log("[followup] ✓ VALID REPLY FOUND via rfc822msgid");
                 await markEmailReplied(
                   emailRecordId,
                   influencerId,
@@ -312,6 +363,7 @@ export const checkForReplyAndHandle = async (jobData: any) => {
       }
     }
 
+    // Second attempt: Fallback search by sender/subject
     const subjectSnippet = (emailRecord.subject || "")
       .replace(/"/g, "")
       .slice(0, 80)
@@ -328,7 +380,7 @@ export const checkForReplyAndHandle = async (jobData: any) => {
     if (afterEpoch) parts.push(`after:${afterEpoch}`);
     const fallbackQuery = parts.join(" ");
     queriesTried.push(fallbackQuery);
-    console.debug("[followup] trying fallback Gmail query:", fallbackQuery);
+    console.log("[followup] Trying fallback Gmail query:", fallbackQuery);
 
     try {
       const listResp = await gmail.users.messages.list({
@@ -337,16 +389,15 @@ export const checkForReplyAndHandle = async (jobData: any) => {
         maxResults: 50,
       });
       console.log(
-        "[followup] Gmail.list (fallback) resultSizeEstimate:",
-        listResp.data.resultSizeEstimate,
-        "candidates:",
-        (listResp.data.messages || []).length
+        "[followup] Gmail.list (fallback) found:",
+        (listResp.data.messages || []).length,
+        "candidates"
       );
 
       const candidates = listResp.data.messages || [];
       if (!candidates.length) {
-        console.debug(
-          "[followup] no candidate messages found for any query. queriesTried:",
+        console.log(
+          "[followup] ✗ No reply found after checking all queries:",
           queriesTried
         );
         return await handleNoReplyFallback(jobData);
@@ -363,59 +414,44 @@ export const checkForReplyAndHandle = async (jobData: any) => {
           const headersMap = extractHeaders(meta.data);
 
           let internalDate = Number(meta.data.internalDate || 0);
-          if (!internalDate) {
-            try {
-              const full = await gmail.users.messages.get({
-                userId: "me",
-                id: c.id,
-              });
-              internalDate = Number(full.data.internalDate || 0);
-            } catch (fullErr) {
-              console.warn(
-                "[followup] failed to fetch full message for internalDate fallback:",
-                c.id,
-                fullErr
-              );
-            }
+
+          // ✅ CRITICAL: Always check time - skip if no date or too old
+          if (!internalDate || !emailRecord.sentAt) {
+            console.debug(
+              "[followup] ✗ Skipping candidate - missing date info:",
+              c.id
+            );
+            continue;
           }
 
-          if (emailRecord.sentAt && internalDate) {
-            const msgDate = new Date(internalDate);
-            if (
-              msgDate.getTime() <
-              emailRecord.sentAt.getTime() - afterEpochBufferSec * 1000
-            ) {
-              console.debug(
-                "[followup] skipping candidate older than sentAt:",
-                c.id,
-                msgDate.toISOString()
-              );
-              continue;
-            }
+          const msgDate = new Date(internalDate);
+          const sentAtWithBuffer =
+            emailRecord.sentAt.getTime() - afterEpochBufferSec * 1000;
+
+          if (msgDate.getTime() < sentAtWithBuffer) {
+            console.debug(
+              "[followup] ✗ Skipping candidate - older than sentAt:",
+              c.id,
+              {
+                msgDate: msgDate.toISOString(),
+                sentAt: emailRecord.sentAt.toISOString(),
+              }
+            );
+            continue;
           }
 
+          // ✅ Pass original subject for matching
           const valid = isReplyToOriginal(
             headersMap,
             mailgunMessageIdNormalized,
             influencerEmail,
             userGmailAddress,
-            emailRecord.sentAt || null
+            emailRecord.sentAt || null,
+            emailRecord.subject || null
           );
 
-          console.debug("[followup] fallback candidate checked:", {
-            candidateId: c.id,
-            valid,
-            headersSample: {
-              from: headersMap["from"],
-              to: headersMap["to"] || headersMap["delivered-to"],
-              inReplyTo: headersMap["in-reply-to"],
-              references: headersMap["references"],
-              messageId: headersMap["message-id"],
-            },
-            internalDate,
-          });
-
           if (valid) {
+            console.log("[followup] ✓ VALID REPLY FOUND via fallback search");
             await markEmailReplied(
               emailRecordId,
               influencerId,
@@ -429,9 +465,8 @@ export const checkForReplyAndHandle = async (jobData: any) => {
         }
       }
 
-      console.debug(
-        "[followup] examined fallback candidates but none validated as reply. queriesTried:",
-        queriesTried
+      console.log(
+        "[followup] ✗ No valid replies found after examining all candidates"
       );
       return await handleNoReplyFallback(jobData);
     } catch (fallbackErr) {
@@ -450,12 +485,14 @@ const markEmailReplied = async (
   followUpQueueRef: any,
   emailRecord: any
 ) => {
+  console.log("[followup] ✓ Marking email as REPLIED:", emailRecordId);
+
   try {
     await prisma.email.update({
       where: { id: emailRecordId },
       data: { status: EmailStatus.REPLIED, repliedAt: new Date() },
     });
-    console.log("[followup] marked email as REPLIED:", emailRecordId);
+    console.log("[followup] ✓ Email marked as REPLIED");
   } catch (e) {
     console.warn(
       "[followup] failed to update email record to REPLIED:",
@@ -470,7 +507,7 @@ const markEmailReplied = async (
       data: { status: InfluencerStatus.NOT_SENT },
     });
     console.log(
-      "[followup] reset influencer status to NOT_SENT:",
+      "[followup] ✓ Influencer status reset to NOT_SENT:",
       influencerId
     );
   } catch (e) {
@@ -481,7 +518,7 @@ const markEmailReplied = async (
     try {
       await followUpQueueRef.remove(emailRecord.scheduledJobId);
       console.log(
-        "[followup] cancelled scheduled follow-up job:",
+        "[followup] ✓ Cancelled scheduled follow-up job:",
         emailRecord.scheduledJobId
       );
     } catch (e) {
@@ -497,17 +534,26 @@ const markEmailReplied = async (
 const handleNoReplyFallback = async (jobData: any) => {
   const { influencerId, emailRecordId, step = 1, userId } = jobData;
 
+  console.log("[followup] No reply detected, handling fallback:", {
+    step,
+    influencerId,
+  });
+
   if (step > 3) {
     console.warn("[followup] step beyond expected range, aborting:", step);
     return;
   }
 
   if (step === 3) {
+    console.log(
+      "[followup] Final check complete, marking influencer as REJECTED"
+    );
     try {
       await prisma.influencer.update({
         where: { id: influencerId },
         data: { status: InfluencerStatus.REJECTED },
       });
+      console.log("[followup] ✓ Influencer marked as REJECTED");
     } catch (e) {
       console.warn("[followup] failed to set influencer to REJECTED:", e);
     }
@@ -570,6 +616,12 @@ const handleNoReplyFallback = async (jobData: any) => {
     return;
   }
 
+  console.log("[followup] Sending follow-up email:", {
+    templateName,
+    step,
+    influencerEmail: influencer.email,
+  });
+
   const personalizedSubject = nextTemplate.subject
     .replace(/{{name}}/g, influencer.name || "")
     .replace(/{{email}}/g, influencer.email || "");
@@ -599,6 +651,7 @@ const handleNoReplyFallback = async (jobData: any) => {
         isAutomation: true,
       },
     });
+    console.log("[followup] ✓ Follow-up email record created:", newEmail.id);
   } catch (e) {
     console.error("[followup] failed to create follow-up email record:", e);
     return;
@@ -616,6 +669,7 @@ const handleNoReplyFallback = async (jobData: any) => {
       influencerId,
       replyTo: user.googleEmail || process.env.MAILGUN_FROM_EMAIL,
     });
+    console.log("[followup] ✓ Follow-up email queued for sending");
   } catch (e) {
     console.error("[followup] failed to enqueue follow-up send:", e, {
       influencerId,
@@ -630,6 +684,7 @@ const handleNoReplyFallback = async (jobData: any) => {
       where: { id: influencerId },
       data: { status: nextStatus, lastContactDate: new Date() },
     });
+    console.log("[followup] ✓ Influencer status updated to:", nextStatus);
   } catch (e) {
     console.warn("[followup] failed to update influencer status:", e);
   }
@@ -649,6 +704,7 @@ const handleNoReplyFallback = async (jobData: any) => {
         where: { id: newEmail.id },
         data: { scheduledJobId: String(nextCheckJob.id) },
       });
+      console.log("[followup] ✓ Next follow-up check scheduled for step 2");
     } else if (step === 2) {
       const finalWait = Number(process.env.FOLLOWUP_FINAL_WAIT_MS) || sendDelay;
       const finalCheckJob = await followUpQueue.add(
@@ -664,6 +720,7 @@ const handleNoReplyFallback = async (jobData: any) => {
         where: { id: newEmail.id },
         data: { scheduledJobId: String(finalCheckJob.id) },
       });
+      console.log("[followup] ✓ Final follow-up check scheduled for step 3");
     }
   } catch (e) {
     console.warn("[followup] failed to schedule next follow-up check:", e);

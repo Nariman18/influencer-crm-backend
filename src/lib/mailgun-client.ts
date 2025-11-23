@@ -1,6 +1,7 @@
 // src/lib/mailgun-client.ts
 import axios from "axios";
 import { sendViaSmtp } from "./mailgun-smtp";
+import { domainHasMX } from "./mailgun-helpers";
 
 const API_KEY = process.env.MAILGUN_API_KEY || "";
 const DOMAIN = process.env.MAILGUN_DOMAIN || "";
@@ -97,6 +98,7 @@ export const sendMailgunEmail = async (opts: {
   headers?: Record<string, string>;
   senderName?: string;
 }): Promise<SendResult> => {
+  // Basic email validation
   if (!isEmailValid(opts.to)) {
     const msg = `Invalid recipient email: "${opts.to}"`;
     console.error("[mailgun-client] " + msg);
@@ -106,6 +108,42 @@ export const sendMailgunEmail = async (opts: {
     const msg = `Invalid MAILGUN_FROM_EMAIL: "${FROM_EMAIL}"`;
     console.error("[mailgun-client] " + msg);
     return { success: false, error: msg };
+  }
+
+  // Extract recipient domain for diagnostics
+  const recipientDomain = opts.to.split("@").pop()?.toLowerCase();
+
+  console.log(
+    "[mailgun-client] Preparing to send to domain:",
+    recipientDomain,
+    {
+      to: opts.to,
+      subject: opts.subject.substring(0, 50),
+    }
+  );
+
+  // Check MX records for domain (helps diagnose mail.ru issues)
+  if (recipientDomain) {
+    try {
+      const hasMX = await domainHasMX(recipientDomain);
+      if (!hasMX) {
+        const msg = `No MX records found for domain: ${recipientDomain}`;
+        console.error(`[mailgun-client] ${msg}`);
+        return {
+          success: false,
+          error: msg,
+        };
+      }
+      console.log(
+        `[mailgun-client] ✓ MX records verified for ${recipientDomain}`
+      );
+    } catch (mxErr) {
+      console.warn(
+        `[mailgun-client] MX check failed for ${recipientDomain}:`,
+        mxErr
+      );
+      // Continue anyway - MX check failure shouldn't block sending
+    }
   }
 
   const fromHeader = buildFrom(opts.senderName);
@@ -155,7 +193,7 @@ export const sendMailgunEmail = async (opts: {
   form.append("subject", opts.subject);
   form.append("html", opts.html);
 
-  // ✅ CRITICAL: Use sender's Gmail address for Reply-To (NOT a static address)
+  // Use sender's Gmail address for Reply-To (NOT a static address)
   // This ensures replies go to the user's Gmail inbox where CRM can detect them
   const replyToAddress = opts.replyTo || process.env.MAILGUN_FROM_EMAIL!;
   if (replyToAddress) {
@@ -173,7 +211,10 @@ export const sendMailgunEmail = async (opts: {
   const uniqueId = `${Date.now()}-${Math.random()
     .toString(36)
     .substring(2, 15)}`;
-  form.append("h:Message-ID", `<${uniqueId}@${messageIdDomain}>`);
+  const generatedMessageId = `<${uniqueId}@${messageIdDomain}>`;
+  form.append("h:Message-ID", generatedMessageId);
+
+  console.log("[mailgun-client] Generated Message-ID:", generatedMessageId);
 
   // Required headers for deliverability
   form.append("h:Date", new Date().toUTCString());
@@ -198,11 +239,12 @@ export const sendMailgunEmail = async (opts: {
     }
   }
 
-  console.log("[mailgun-client] sending mailgun request", {
+  console.log("[mailgun-client] Sending via Mailgun API:", {
     url,
     from: fromHeader,
     to: opts.to,
-    subject: opts.subject,
+    domain: recipientDomain,
+    subject: opts.subject.substring(0, 50),
     replyTo: replyToAddress,
   });
 
@@ -256,6 +298,14 @@ export const sendMailgunEmail = async (opts: {
           (status >= 500 && status < 600);
 
         if (!isTransient) {
+          console.error(
+            `[mailgun-client] Permanent error for ${recipientDomain}:`,
+            {
+              status,
+              data: respData,
+              to: opts.to,
+            }
+          );
           throw err;
         }
 
@@ -264,11 +314,12 @@ export const sendMailgunEmail = async (opts: {
             ? JSON.stringify(respData)
             : err?.message;
         console.warn(
-          `[mailgun-client] transient send error (attempt ${attempt}/${MAX_RETRIES})`,
+          `[mailgun-client] Transient send error (attempt ${attempt}/${MAX_RETRIES}) for ${recipientDomain}:`,
           {
             status,
             message: msg,
             recommendedDelaySec,
+            to: opts.to,
           }
         );
 
@@ -291,7 +342,7 @@ export const sendMailgunEmail = async (opts: {
         await new Promise((r) => setTimeout(r, delayMs));
       }
     }
-    throw new Error("Mailgun post failed after retries");
+    throw new Error(`Mailgun post failed after ${MAX_RETRIES} retries`);
   };
 
   try {
@@ -300,6 +351,15 @@ export const sendMailgunEmail = async (opts: {
     const rawId = res.data?.id || res.data?.messageId || undefined;
     const normalizedId =
       typeof rawId === "string" ? rawId.replace(/[<>]/g, "").trim() : undefined;
+
+    console.log(
+      `[mailgun-client] ✓ Email sent successfully to ${recipientDomain}:`,
+      {
+        to: opts.to,
+        mailgunId: rawId,
+        messageIdNormalized: normalizedId,
+      }
+    );
 
     return {
       success: true,
@@ -321,13 +381,17 @@ export const sendMailgunEmail = async (opts: {
     }
 
     console.error(
-      "[mailgun-client] Mailgun API send error (after retries):",
-      responseData || err?.message || err
+      `[mailgun-client] ✗ Mailgun API send error (after retries) for ${recipientDomain}:`,
+      {
+        to: opts.to,
+        error: responseData || err?.message || err,
+        domain: recipientDomain,
+      }
     );
 
     if (SMTP_CONFIGURED) {
       console.warn(
-        "[mailgun-client] Mailgun API failed; attempting SMTP fallback",
+        `[mailgun-client] Attempting SMTP fallback for ${recipientDomain}`,
         { to: opts.to }
       );
       try {
@@ -346,10 +410,13 @@ export const sendMailgunEmail = async (opts: {
           typeof smtpMessageId === "string"
             ? smtpMessageId.replace(/[<>]/g, "").trim()
             : undefined;
-        console.log("[mailgun-client] SMTP fallback succeeded", {
-          to: opts.to,
-          smtpMessageId,
-        });
+        console.log(
+          `[mailgun-client] ✓ SMTP fallback succeeded for ${recipientDomain}:`,
+          {
+            to: opts.to,
+            smtpMessageId,
+          }
+        );
 
         return {
           success: true,
@@ -359,7 +426,10 @@ export const sendMailgunEmail = async (opts: {
         };
       } catch (smtpErr: any) {
         const smtpErrMsg = smtpErr?.message || String(smtpErr);
-        console.error("[mailgun-client] SMTP fallback failed:", smtpErrMsg);
+        console.error(
+          `[mailgun-client] ✗ SMTP fallback failed for ${recipientDomain}:`,
+          smtpErrMsg
+        );
         return {
           success: false,
           error: `${errString} ; SMTP fallback: ${smtpErrMsg}`,

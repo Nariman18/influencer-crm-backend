@@ -11,9 +11,12 @@ export const buildEmailHtml = (
   senderName?: string
 ): string => {
   const safeBodyHtml = normalizeBodyToHtml(body || "");
-
-  // ✅ Using sender's actual name instead of generic text or email username
   const fromName = senderName || senderEmail.split("@")[0];
+
+  // ✅ Build unsubscribe mailto link
+  const unsubscribeLink = `mailto:${
+    process.env.MAILGUN_REPLY_TO_EMAIL || senderEmail
+  }?subject=Unsubscribe`;
 
   return `<!DOCTYPE html>
 <html>
@@ -73,6 +76,21 @@ export const buildEmailHtml = (
         color: #9CA3AF;
         border-top: 1px solid #E5E7EB;
       }
+
+      .footer-links {
+        margin-top: 12px;
+      }
+
+      .footer-link {
+        color: #6B7280;
+        text-decoration: none;
+        margin: 0 8px;
+      }
+
+      .footer-link:hover {
+        color: #374151;
+        text-decoration: underline;
+      }
       
       @media (max-width: 600px) {
         body {
@@ -103,9 +121,12 @@ export const buildEmailHtml = (
       </div>
 
       <div class="footer">
-        <p style="margin: 0; font-size: 11px; color: #9CA3AF;">
+        <p style="margin: 0 0 8px 0; font-size: 11px; color: #9CA3AF;">
           Reply directly to this email to continue the conversation.
         </p>
+        <div class="footer-links">
+          <a href="${unsubscribeLink}" class="footer-link" style="color: #6B7280; text-decoration: none;">Unsubscribe</a>
+        </div>
       </div>
     </div>
   </body>

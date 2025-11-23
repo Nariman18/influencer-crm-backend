@@ -365,7 +365,7 @@ export const sendEmail = async (
       body = customBody;
     }
 
-    // ✅ Get sender info including name
+    // Get sender info including name
     const senderUser = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true, googleEmail: true, name: true },
@@ -464,7 +464,7 @@ export const bulkSendEmails = async (
           })
         : null;
 
-    // ✅ Get sender info including name
+    // Get sender info including name
     const senderUser = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true, googleEmail: true, name: true },
@@ -576,7 +576,7 @@ export const bulkSendEmails = async (
         const subject = replaceVariables(template.subject, personalizedVars);
         const body = replaceVariables(template.body, personalizedVars);
 
-        // ✅ Pass sender name to buildEmailHtml
+        // Pass sender name to buildEmailHtml
         const wrappedBody = buildEmailHtml(
           body,
           influencer.name || "",
@@ -605,7 +605,7 @@ export const bulkSendEmails = async (
           subject,
           body: wrappedBody,
           influencerName: influencer.name,
-          senderName: senderUser?.name || undefined, // ✅ Added this
+          senderName: senderUser?.name || undefined,
           emailRecordId: email.id,
           influencerId: influencer.id,
           replyTo: senderAddress,

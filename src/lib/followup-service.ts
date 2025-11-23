@@ -35,7 +35,7 @@ const ensureValidGoogleClient = async (
       return;
     }
   } catch (err) {
-    // try to refresh - try both older and newer API forms
+    // trying both older and newer API forms
     try {
       // older googleapis had refreshAccessToken()
       if (typeof oauth2Client.refreshAccessToken === "function") {

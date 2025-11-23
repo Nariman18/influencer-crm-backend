@@ -110,8 +110,18 @@ export const sendMailgunEmail = async (opts: {
     return { success: false, error: msg };
   }
 
-  // Extract recipient domain for diagnostics
+  // Extract recipient domain for diagnostics and Russian provider detection
   const recipientDomain = opts.to.split("@").pop()?.toLowerCase();
+
+  // ✅ Detect Russian email providers (they have the strictest spam filters)
+  const RUSSIAN_PROVIDERS = ["mail.ru", "yandex.ru", "rambler.ru", "bk.ru"];
+  const isRussianProvider = RUSSIAN_PROVIDERS.includes(recipientDomain || "");
+
+  if (isRussianProvider) {
+    console.log(
+      `[mailgun-client] 🇷🇺 Russian provider detected: ${recipientDomain} - applying strict optimizations`
+    );
+  }
 
   console.log(
     "[mailgun-client] Preparing to send to domain:",
@@ -119,6 +129,7 @@ export const sendMailgunEmail = async (opts: {
     {
       to: opts.to,
       subject: opts.subject.substring(0, 50),
+      isRussianProvider,
     }
   );
 
@@ -201,10 +212,20 @@ export const sendMailgunEmail = async (opts: {
     console.log("[mailgun-client] Reply-To set to:", replyToAddress);
   }
 
-  // Disable tracking to avoid spam filters
-  form.append("o:tracking", "yes");
-  form.append("o:tracking-clicks", "no");
-  form.append("o:tracking-opens", "no");
+  // ✅ CRITICAL: Russian providers REQUIRE no tracking
+  if (isRussianProvider) {
+    form.append("o:tracking", "no"); // Completely disable tracking
+    form.append("o:tracking-clicks", "no");
+    form.append("o:tracking-opens", "no");
+    console.log(
+      "[mailgun-client] 🇷🇺 Disabled all tracking for Russian provider"
+    );
+  } else {
+    // Normal providers: minimal tracking
+    form.append("o:tracking", "yes");
+    form.append("o:tracking-clicks", "no");
+    form.append("o:tracking-opens", "no");
+  }
 
   // Generate unique Message-ID
   const messageIdDomain = DOMAIN || "mail.imx.agency";
@@ -221,8 +242,8 @@ export const sendMailgunEmail = async (opts: {
   form.append("h:MIME-Version", "1.0");
   form.append("h:Content-Type", "text/html; charset=UTF-8");
 
-  // List-Unsubscribe header (uses Reply-To for unsubscribe requests)
-  if (replyToAddress) {
+  // ✅ Russian providers hate "List-Unsubscribe" - skip it for them
+  if (!isRussianProvider && replyToAddress) {
     form.append(
       "h:List-Unsubscribe",
       `<mailto:${replyToAddress}?subject=Unsubscribe>`
@@ -231,7 +252,15 @@ export const sendMailgunEmail = async (opts: {
 
   // Custom headers for better deliverability
   form.append("h:X-Mailer", "Collaboration Platform 1.0");
-  form.append("h:Precedence", "bulk");
+
+  // ✅ CRITICAL: Russian providers HATE "Precedence: bulk" header
+  if (!isRussianProvider) {
+    form.append("h:Precedence", "bulk");
+  } else {
+    console.log(
+      "[mailgun-client] 🇷🇺 Skipped 'Precedence: bulk' header for Russian provider"
+    );
+  }
 
   if (opts.headers) {
     for (const [k, v] of Object.entries(opts.headers)) {
@@ -246,6 +275,7 @@ export const sendMailgunEmail = async (opts: {
     domain: recipientDomain,
     subject: opts.subject.substring(0, 50),
     replyTo: replyToAddress,
+    isRussianProvider,
   });
 
   const MAX_RETRIES = Math.max(1, Number(process.env.MAILGUN_MAX_RETRIES || 5));
@@ -358,6 +388,7 @@ export const sendMailgunEmail = async (opts: {
         to: opts.to,
         mailgunId: rawId,
         messageIdNormalized: normalizedId,
+        isRussianProvider,
       }
     );
 
@@ -386,6 +417,7 @@ export const sendMailgunEmail = async (opts: {
         to: opts.to,
         error: responseData || err?.message || err,
         domain: recipientDomain,
+        isRussianProvider,
       }
     );
 

@@ -739,7 +739,10 @@ export const addBulkEmailJobs = async (
     "yahoo.com": 20,
     "yahoo.gr": 20,
     "gmail.com": 60,
-    "mail.ru": 5,
+    "mail.ru": 120,
+    "yandex.ru": 120,
+    "rambler.ru": 120,
+    "bk.ru": 120,
     "panikrecords.gr": 20,
   };
 

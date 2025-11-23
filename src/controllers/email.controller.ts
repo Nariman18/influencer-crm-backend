@@ -155,12 +155,13 @@ export class EmailService {
           process.env.MAILGUN_FROM_EMAIL ||
           "";
 
-        // Pass sender name to buildEmailHtml
+        // ✅ FIXED: Pass 'to' as recipientEmail (5th parameter)
         const wrappedHtml = buildEmailHtml(
           body,
           influencerName,
           senderAddress,
-          user.name || undefined
+          user.name || undefined,
+          to // ✅ CORRECT: Use 'to' parameter instead of 'influencer.email'
         );
 
         const emailLines = [
@@ -376,12 +377,13 @@ export const sendEmail = async (
       process.env.MAILGUN_FROM_EMAIL ||
       "";
 
-    // Pass sender name to buildEmailHtml
+    // ✅ FIXED: Pass influencer.email as 5th parameter
     const wrappedBody = buildEmailHtml(
       body,
       influencer.name || "",
       senderAddress,
-      senderUser?.name || undefined
+      senderUser?.name || undefined,
+      influencer.email || undefined // ✅ ADDED: recipientEmail parameter
     );
 
     const email = await prisma.email.create({
@@ -395,14 +397,13 @@ export const sendEmail = async (
       },
     });
 
-    // ✅ Pass sender name to queue job
     await redisQueue.addEmailJob({
       userId: req.user.id,
       to: influencer.email!,
       subject,
       body: wrappedBody,
       influencerName: influencer.name,
-      senderName: senderUser?.name || undefined, // ✅ Added this
+      senderName: senderUser?.name || undefined,
       emailRecordId: email.id,
       influencerId: influencer.id,
       replyTo: senderAddress,
@@ -522,7 +523,8 @@ export const bulkSendEmails = async (
                 }),
                 influencer.name || "",
                 senderAddress,
-                senderUser?.name || undefined
+                senderUser?.name || undefined,
+                influencer.email || undefined // ✅ ADDED: recipientEmail parameter
               ),
               status: EmailStatus.FAILED,
               errorMessage: `No MX records for domain: ${domain}`,
@@ -554,7 +556,8 @@ export const bulkSendEmails = async (
                 }),
                 influencer.name || "",
                 senderAddress,
-                senderUser?.name || undefined
+                senderUser?.name || undefined,
+                influencer.email || undefined // ✅ ADDED: recipientEmail parameter
               ),
               status: EmailStatus.FAILED,
               errorMessage:
@@ -576,12 +579,13 @@ export const bulkSendEmails = async (
         const subject = replaceVariables(template.subject, personalizedVars);
         const body = replaceVariables(template.body, personalizedVars);
 
-        // Pass sender name to buildEmailHtml
+        // ✅ FIXED: Pass influencer.email as 5th parameter
         const wrappedBody = buildEmailHtml(
           body,
           influencer.name || "",
           senderAddress,
-          senderUser?.name || undefined
+          senderUser?.name || undefined,
+          influencer.email || undefined // ✅ ADDED: recipientEmail parameter
         );
 
         const email = await prisma.email.create({

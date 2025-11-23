@@ -4,16 +4,30 @@ export const normalizeBodyToHtml = (body: string): string => {
   return String(body).replace(/\r\n/g, "\n").replace(/\n/g, "<br>");
 };
 
+/**
+ * Build professional email HTML with conditional footer based on recipient domain
+ * @param body - Email body content
+ * @param influencerName - Recipient name (currently unused but kept for compatibility)
+ * @param senderEmail - Sender's email address
+ * @param senderName - Sender's name (optional)
+ * @param recipientEmail - Recipient's email address (for Russian provider detection)
+ */
 export const buildEmailHtml = (
   body: string,
   influencerName: string,
   senderEmail: string,
-  senderName?: string
+  senderName?: string,
+  recipientEmail?: string
 ): string => {
   const safeBodyHtml = normalizeBodyToHtml(body || "");
   const fromName = senderName || senderEmail.split("@")[0];
 
-  // ✅ Build unsubscribe mailto link
+  // ✅ Detect Russian email providers
+  const recipientDomain = recipientEmail?.split("@").pop()?.toLowerCase() || "";
+  const RUSSIAN_PROVIDERS = ["mail.ru", "yandex.ru", "rambler.ru", "bk.ru"];
+  const isRussianProvider = RUSSIAN_PROVIDERS.includes(recipientDomain);
+
+  // ✅ Build unsubscribe mailto link (only for non-Russian providers)
   const unsubscribeLink = `mailto:${
     process.env.MAILGUN_REPLY_TO_EMAIL || senderEmail
   }?subject=Unsubscribe`;
@@ -120,14 +134,18 @@ export const buildEmailHtml = (
         </div>
       </div>
 
-      <div class="footer">
+      ${
+        !isRussianProvider
+          ? `<div class="footer">
         <p style="margin: 0 0 8px 0; font-size: 11px; color: #9CA3AF;">
           Reply directly to this email to continue the conversation.
         </p>
         <div class="footer-links">
           <a href="${unsubscribeLink}" class="footer-link" style="color: #6B7280; text-decoration: none;">Unsubscribe</a>
         </div>
-      </div>
+      </div>`
+          : `<!-- Footer removed for Russian email provider: ${recipientDomain} -->`
+      }
     </div>
   </body>
 </html>`;

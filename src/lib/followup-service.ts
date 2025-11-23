@@ -635,7 +635,8 @@ const handleNoReplyFallback = async (jobData: any) => {
     personalizedBody,
     influencer.name || "",
     senderAddress,
-    user?.name || undefined
+    user?.name || undefined,
+    influencer.email || undefined
   );
 
   let newEmail;

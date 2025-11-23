@@ -216,9 +216,9 @@ function hasRowData(values: any[]): boolean {
       text === "" ||
       text === "Nickname" ||
       text === "Link" ||
-      text === "E-mail" || // ✅ ADD THIS LINE
+      text === "E-mail" ||
       text === "No Email" ||
-      text.toLowerCase() === "e-mail" || // ✅ ADD THIS LINE (case-insensitive)
+      text.toLowerCase() === "e-mail" ||
       text.toLowerCase().includes("placeholder") ||
       text === "-" ||
       text === "—" ||

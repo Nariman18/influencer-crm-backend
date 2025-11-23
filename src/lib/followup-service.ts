@@ -246,8 +246,8 @@ export const checkForReplyAndHandle = async (jobData: any) => {
       try {
         const listResp = await gmail.users.messages.list({
           userId: "me",
-          q,
-          maxResults: 25,
+          q: `from:${influencerEmail} to:${userGmailAddress}`,
+          maxResults: 50,
         });
         const candidates = listResp.data.messages || [];
         console.log(

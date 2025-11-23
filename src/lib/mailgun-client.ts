@@ -7,7 +7,7 @@ const DOMAIN = process.env.MAILGUN_DOMAIN || "";
 const BASE = process.env.MAILGUN_BASE_URL || "https://api.mailgun.net/v3";
 
 const FROM_EMAIL = process.env.MAILGUN_FROM_EMAIL || "";
-const FROM_NAME = process.env.MAILGUN_FROM_NAME || "Collaboration Team"; // ✅ Fallback to professional name
+const FROM_NAME = process.env.MAILGUN_FROM_NAME || "Collaboration Team";
 
 const SMTP_CONFIGURED =
   Boolean(process.env.MAILGUN_SMTP_HOST) &&
@@ -31,7 +31,6 @@ if (!FROM_EMAIL || !API_KEY || !DOMAIN) {
 }
 
 const buildFrom = (senderName?: string) => {
-  // ✅ Prioritize sender name from user profile
   const rawName = senderName || FROM_NAME || "";
   const cleaned = String(rawName)
     .replace(/^["']|["']$/g, "")
@@ -96,7 +95,7 @@ export const sendMailgunEmail = async (opts: {
   html: string;
   replyTo?: string;
   headers?: Record<string, string>;
-  senderName?: string; // ✅ Add sender name parameter
+  senderName?: string;
 }): Promise<SendResult> => {
   if (!isEmailValid(opts.to)) {
     const msg = `Invalid recipient email: "${opts.to}"`;
@@ -109,7 +108,7 @@ export const sendMailgunEmail = async (opts: {
     return { success: false, error: msg };
   }
 
-  const fromHeader = buildFrom(opts.senderName); // ✅ Pass sender name
+  const fromHeader = buildFrom(opts.senderName);
 
   if (!API_KEY || !DOMAIN) {
     const msg = "Mailgun API key or domain missing in environment";
@@ -156,15 +155,15 @@ export const sendMailgunEmail = async (opts: {
   form.append("subject", opts.subject);
   form.append("html", opts.html);
 
-  const replyToAddress =
-    process.env.MAILGUN_REPLY_TO_EMAIL ||
-    opts.replyTo ||
-    process.env.MAILGUN_FROM_EMAIL!;
+  // ✅ CRITICAL: Use sender's Gmail address for Reply-To (NOT a static address)
+  // This ensures replies go to the user's Gmail inbox where CRM can detect them
+  const replyToAddress = opts.replyTo || process.env.MAILGUN_FROM_EMAIL!;
   if (replyToAddress) {
     form.append("h:Reply-To", replyToAddress);
+    console.log("[mailgun-client] Reply-To set to:", replyToAddress);
   }
 
-  // Disabling tracking to avoid spam filters
+  // Disable tracking to avoid spam filters
   form.append("o:tracking", "yes");
   form.append("o:tracking-clicks", "no");
   form.append("o:tracking-opens", "no");
@@ -181,15 +180,15 @@ export const sendMailgunEmail = async (opts: {
   form.append("h:MIME-Version", "1.0");
   form.append("h:Content-Type", "text/html; charset=UTF-8");
 
-  // Adding List-Unsubscribe header
-  if (opts.replyTo) {
+  // List-Unsubscribe header (uses Reply-To for unsubscribe requests)
+  if (replyToAddress) {
     form.append(
       "h:List-Unsubscribe",
-      `<mailto:${opts.replyTo}?subject=Unsubscribe>`
+      `<mailto:${replyToAddress}?subject=Unsubscribe>`
     );
   }
 
-  // ✅ Add custom headers for better deliverability
+  // Custom headers for better deliverability
   form.append("h:X-Mailer", "Collaboration Platform 1.0");
   form.append("h:Precedence", "bulk");
 
@@ -204,7 +203,7 @@ export const sendMailgunEmail = async (opts: {
     from: fromHeader,
     to: opts.to,
     subject: opts.subject,
-    replyTo: opts.replyTo,
+    replyTo: replyToAddress,
   });
 
   const MAX_RETRIES = Math.max(1, Number(process.env.MAILGUN_MAX_RETRIES || 5));

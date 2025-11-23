@@ -155,6 +155,75 @@ export const extractCellText = (v: any): string => {
 };
 
 /**
+ * Check if a string looks like a country name (not a header)
+ */
+export const looksLikeCountry = (s: string | null | undefined): boolean => {
+  if (!s) return false;
+  const text = String(s).trim();
+
+  // Skip if empty or too short
+  if (text.length < 2) return false;
+
+  // Skip common Excel headers
+  const headers = [
+    "nickname",
+    "name",
+    "link",
+    "e-mail",
+    "email",
+    "instagram",
+    "followers",
+    "notes",
+    "country",
+    "status",
+    "phone",
+    "contact",
+  ];
+
+  if (headers.includes(text.toLowerCase())) {
+    return false;
+  }
+
+  // Skip DM markers and empty placeholders
+  if (looksLikeDM(text)) return false;
+  if (text === "-" || text === "—" || text === "n/a" || text === "N/A") {
+    return false;
+  }
+
+  // If it starts with @ or contains @, it's likely Instagram/email, not country
+  if (text.includes("@")) return false;
+
+  // If it looks like a URL, not a country
+  if (text.includes("://") || text.includes("www.")) return false;
+
+  // Common country patterns (add more as needed)
+  // Most countries are 3-50 characters, letters and spaces only
+  const countryPattern = /^[A-Za-zÀ-ÿ\s\-]{3,50}$/;
+
+  return countryPattern.test(text);
+};
+
+/**
+ * Extract country from first row if present
+ */
+export const extractCountryFromFirstRow = (values: any[]): string | null => {
+  if (!Array.isArray(values) || values.length < 2) return null;
+
+  // Check column A (index 1 in ExcelJS 1-based array)
+  const cellA1 = values[1];
+  if (!cellA1) return null;
+
+  const text = extractCellText(cellA1).trim();
+
+  if (looksLikeCountry(text)) {
+    console.log(`🌍 Detected country in Row 1: "${text}"`);
+    return text;
+  }
+
+  return null;
+};
+
+/**
  * Enhanced email validation with Unicode normalization
  */
 export const emailLooksValid = (s: any): boolean => {
@@ -250,7 +319,7 @@ export function mappedToCreateMany(
     instagramHandle: row.instagramHandle || null, // FULL Instagram URL from Excel Link column
     link: row.link || null, // Also the FULL Instagram URL from Excel Link column
     followers: null,
-    country: null,
+    country: row.country || null, // ✅ UPDATED: Include country from Excel
     notes: row.notes || null, // Include DM notes if any
     status: InfluencerStatus.NOT_SENT,
     managerId,
@@ -269,7 +338,7 @@ export function normalizeParsedRow(row: ParsedRow): ParsedRow {
       : null, // NO @ removal!
     link: row.link ? String(row.link).trim() : null,
     followers: null,
-    country: null,
+    country: row.country ? String(row.country).trim() : null, // ✅ UPDATED: Preserve country
     notes: row.notes ? String(row.notes).trim() : null,
   };
 

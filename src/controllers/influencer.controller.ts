@@ -101,6 +101,7 @@ export const getInfluencers = async (
     const status = req.query.status as InfluencerStatus | undefined;
     const search = (req.query.search as string) || undefined;
     const emailFilter = (req.query.emailFilter as string) || undefined;
+    const country = (req.query.country as string) || undefined;
     const skip = (page - 1) * limit;
 
     if (!req.user || !req.user.id) throw new AppError("Not authenticated", 401);
@@ -109,6 +110,10 @@ export const getInfluencers = async (
     const where: any = { managerId: req.user.id };
 
     if (status) where.status = status;
+
+    if (country) {
+      where.country = { equals: country, mode: "insensitive" };
+    }
 
     if (search) {
       where.AND = [
@@ -829,6 +834,48 @@ export const stopAutomation = async (
   }
 };
 
+/**
+ * Get all distinct countries from influencers for the current manager
+ */
+export const getCountries = async (
+  req: AuthRequest,
+  res: Response
+): Promise<Response | void> => {
+  try {
+    if (!req.user || !req.user.id) throw new AppError("Not authenticated", 401);
+
+    // Get distinct countries for current manager's influencers
+    const countries = await prisma.influencer.findMany({
+      where: {
+        managerId: req.user.id,
+        country: { not: null }, // Only get influencers with a country set
+      },
+      select: {
+        country: true,
+      },
+      distinct: ["country"],
+      orderBy: {
+        country: "asc",
+      },
+    });
+
+    // Extract country strings and filter out any nulls
+    const countryList = countries
+      .map((item) => item.country)
+      .filter((country): country is string => country !== null)
+      .sort();
+
+    return res.json({
+      countries: countryList,
+      total: countryList.length,
+    });
+  } catch (error) {
+    console.error("Error fetching countries:", error);
+    if (error instanceof AppError) throw error;
+    throw new AppError("Failed to fetch countries", 500);
+  }
+};
+
 const influencerController = {
   getInfluencers,
   getInfluencer,
@@ -840,6 +887,7 @@ const influencerController = {
   importInfluencers,
   checkDuplicates,
   stopAutomation,
+  getCountries,
 };
 
 export default influencerController;

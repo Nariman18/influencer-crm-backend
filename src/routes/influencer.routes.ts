@@ -10,6 +10,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get("/", influencerController.getInfluencers);
+router.get("/countries", influencerController.getCountries);
 router.get("/:id", influencerController.getInfluencer);
 router.post(
   "/",

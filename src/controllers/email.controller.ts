@@ -8,6 +8,7 @@ import { EmailStatus, InfluencerStatus } from "@prisma/client";
 import redisQueue, { EmailJobData } from "../lib/redis-queue";
 import { buildEmailHtml } from "../lib/email-wrap-body";
 import { isSuppressedByMailgun, domainHasMX } from "../lib/mailgun-helpers";
+import { canSendMore } from "../lib/warmup-tracker";
 
 const prisma = getPrisma();
 const OAuth2 = google.auth.OAuth2;
@@ -444,6 +445,23 @@ export const bulkSendEmails = async (
     if (!Array.isArray(influencerIds) || influencerIds.length === 0) {
       throw new AppError("Invalid influencer IDs", 400);
     }
+
+    // WARM-UP CHECK (before any other processing)
+    const volumeCheck = await canSendMore(influencerIds.length);
+
+    if (!volumeCheck.allowed) {
+      throw new AppError(volumeCheck.message || "Daily limit reached", 429);
+    }
+
+    console.log(
+      `[bulkSend] ✓ Warm-up check passed. Sending ${influencerIds.length} emails. ` +
+        `Today: ${volumeCheck.sent + influencerIds.length}/${
+          volumeCheck.limit
+        } ` +
+        `(${
+          volumeCheck.remaining - influencerIds.length
+        } remaining after this batch)`
+    );
 
     if (!templateId)
       throw new AppError("Template ID is required for bulk sending", 400);

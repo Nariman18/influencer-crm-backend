@@ -16,6 +16,7 @@ import {
   looksLikeDM,
   emailLooksValid,
   normalizeUnicodeEmail,
+  extractCountryFromFirstRow, // ✅ NEW IMPORT
 } from "../lib/import-helpers";
 import crypto from "crypto";
 import { getGcsClient } from "../lib/gcs-client";
@@ -295,6 +296,9 @@ async function processLargeImport(job: Job<ImportJobData>) {
     const errors: any[] = [];
     const duplicates: any[] = [];
 
+    // ✅ NEW: Variable to store country from Row 1
+    let batchCountry: string | null = null;
+
     const emitProgress = async () => {
       await publishImportProgress(importJobId, {
         managerId,
@@ -400,10 +404,20 @@ async function processLargeImport(job: Job<ImportJobData>) {
         const values = (row.values || []) as any[];
         if (!Array.isArray(values)) continue;
 
-        // Skip header row
+        // ✅ NEW: Check first row for country
         if (isFirstRow) {
           isFirstRow = false;
-          continue;
+
+          // Try to extract country from Row 1, Column A
+          const detectedCountry = extractCountryFromFirstRow(values);
+          if (detectedCountry) {
+            batchCountry = detectedCountry;
+            console.log(
+              `🌍 Country detected for entire batch: "${batchCountry}"`
+            );
+          }
+
+          continue; // Skip row 1 (either header or country)
         }
 
         // Skip empty rows
@@ -414,25 +428,22 @@ async function processLargeImport(job: Job<ImportJobData>) {
         processed++;
 
         try {
-          // DIRECT MANUAL MAPPING for large files too
-          const rawNickname = values[1] ?? null; // Column A (Nickname)
-          const rawLink = values[2] ?? null; // Column B (Link)
-          const rawEmail = values[3] ?? null; // Column C (E-mail)
+          // DIRECT MANUAL MAPPING for large files
+          const rawNickname = values[1] ?? null;
+          const rawLink = values[2] ?? null;
+          const rawEmail = values[3] ?? null;
 
-          // Extract actual values from Excel objects
           const name = rawNickname ? extractCellText(rawNickname).trim() : null;
           const link = rawLink ? extractCellText(rawLink).trim() : null;
           const emailCandidate = rawEmail
             ? extractCellText(rawEmail).trim()
             : null;
 
-          // Enhanced email processing with Unicode normalization
           let email = null;
           if (emailCandidate && emailLooksValid(emailCandidate)) {
             email = normalizeUnicodeEmail(emailCandidate).toLowerCase();
           }
 
-          // Extract Instagram username for display
           const instagramUsername = link
             ? extractInstagramUsername(link)
             : null;
@@ -440,10 +451,10 @@ async function processLargeImport(job: Job<ImportJobData>) {
           const parsedRow: ParsedRow = {
             name,
             email,
-            instagramHandle: link, // Use the full link as instagramHandle
-            link, // Also store the full link
+            instagramHandle: link,
+            link,
             followers: null,
-            country: null,
+            country: batchCountry, // ✅ NEW: Apply country from Row 1
             notes: null,
           };
 
@@ -457,10 +468,11 @@ async function processLargeImport(job: Job<ImportJobData>) {
             email: normalized.email,
             instagramHandle: normalized.instagramHandle,
             instagramUsername,
+            country: normalized.country, // ✅ NEW: Log country
             notes: normalized.notes,
           });
 
-          // VALIDATION: Only require name (Instagram handle and email are optional)
+          // VALIDATION: Only require name
           if (!normalized.name || normalized.name.trim() === "") {
             failed++;
             errors.push({
@@ -533,6 +545,11 @@ async function processLargeImport(job: Job<ImportJobData>) {
       duplicatesCount: duplicates.length,
       done: true,
     });
+
+    // ✅ NEW: Log country summary
+    if (batchCountry) {
+      console.log(`📊 Import completed with country: ${batchCountry}`);
+    }
 
     console.log(
       `📊 Import completed: ${success} success, ${failed} failed, ${duplicates.length} duplicates`
@@ -612,18 +629,35 @@ async function processStandardImport(job: Job<ImportJobData>) {
     const worksheet = workbook.worksheets[0];
     const rows: any[] = [];
 
+    // ✅ NEW: Variable to store country from Row 1
+    let batchCountry: string | null = null;
+
     console.log("🔍 DEBUG: Reading Excel file structure");
     console.log("Worksheet name:", worksheet.name);
     console.log("Total rows:", worksheet.rowCount);
     console.log("Total columns:", worksheet.columnCount);
+
+    // ✅ NEW: Check Row 1 for country BEFORE processing data rows
+    let firstRowValues: any[] | null = null;
+    worksheet.getRow(1).eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      if (!firstRowValues) firstRowValues = [];
+      firstRowValues[colNumber] = cell.value;
+    });
+
+    if (firstRowValues) {
+      const detectedCountry = extractCountryFromFirstRow(firstRowValues);
+      if (detectedCountry) {
+        batchCountry = detectedCountry;
+        console.log(`🌍 Country detected for entire batch: "${batchCountry}"`);
+      }
+    }
 
     // Get rows excluding empty ones and header
     worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
       debugRowData(rowNumber, row.values as any[]);
 
       if (rowNumber > 1) {
-        // Skip header row (row 1)
-        // Check if row has any meaningful data using our strict helper function
+        // Skip row 1 (header or country)
         if (hasRowData(row.values as any[])) {
           rows.push(row.values);
           console.log(`✅ Including row ${rowNumber} in processing`);
@@ -631,17 +665,14 @@ async function processStandardImport(job: Job<ImportJobData>) {
           console.log(`❌ Skipping empty row ${rowNumber}`);
         }
       } else {
-        console.log(`📋 Skipping header row ${rowNumber}`);
+        console.log(`📋 Skipping row 1 (header/country)`);
       }
     });
 
     console.log(`📊 Processing ${rows.length} data rows from Excel file`);
-
-    // MANUAL MAPPING - NO HEADER PARSING NEEDED
-    // Your Excel structure is always:
-    // Column A: Nickname (index 1 in ExcelJS 1-based array)
-    // Column B: Link (index 2 in ExcelJS 1-based array)
-    // Column C: E-mail (index 3 in ExcelJS 1-based array)
+    if (batchCountry) {
+      console.log(`🌍 Applying country "${batchCountry}" to all influencers`);
+    }
 
     let processed = 0;
     let success = 0;
@@ -658,11 +689,9 @@ async function processStandardImport(job: Job<ImportJobData>) {
       console.log(`🔍 Processing row ${i} with values:`, rowValues);
 
       try {
-        // DIRECT MANUAL MAPPING - NO HEADER DETECTION
-        // ExcelJS row.values is 1-based array: [empty, col1, col2, col3, ...]
-        const rawNickname = rowValues[1] ?? null; // Column A (Nickname)
-        const rawLink = rowValues[2] ?? null; // Column B (Link)
-        const rawEmail = rowValues[3] ?? null; // Column C (E-mail)
+        const rawNickname = rowValues[1] ?? null;
+        const rawLink = rowValues[2] ?? null;
+        const rawEmail = rowValues[3] ?? null;
 
         console.log(`🔍 Row ${i} raw values:`, {
           rawNickname,
@@ -670,29 +699,26 @@ async function processStandardImport(job: Job<ImportJobData>) {
           rawEmail,
         });
 
-        // Extract actual values from Excel objects
         const name = rawNickname ? extractCellText(rawNickname).trim() : null;
         const link = rawLink ? extractCellText(rawLink).trim() : null;
         const emailCandidate = rawEmail
           ? extractCellText(rawEmail).trim()
           : null;
 
-        // Enhanced email processing with Unicode normalization
         let email = null;
         if (emailCandidate && emailLooksValid(emailCandidate)) {
           email = normalizeUnicodeEmail(emailCandidate).toLowerCase();
         }
 
-        // Extract Instagram username for display
         const instagramUsername = link ? extractInstagramUsername(link) : null;
 
         const parsedRow: ParsedRow = {
           name,
           email,
-          instagramHandle: link, // Use the full link as instagramHandle
-          link, // Also store the full link
+          instagramHandle: link,
+          link,
           followers: null,
-          country: null,
+          country: batchCountry, // ✅ NEW: Apply country from Row 1
           notes: null,
         };
 
@@ -709,6 +735,7 @@ async function processStandardImport(job: Job<ImportJobData>) {
           finalEmail: normalized.email,
           finalHandle: normalized.instagramHandle,
           finalLink: normalized.link,
+          finalCountry: normalized.country, // ✅ NEW: Log country
           finalNotes: normalized.notes,
           instagramUsername,
         });
@@ -827,6 +854,11 @@ async function processStandardImport(job: Job<ImportJobData>) {
       errors: errors.length > 0 ? (errors as any) : undefined,
       completedAt: new Date(),
     });
+
+    // ✅ NEW: Log country summary
+    if (batchCountry) {
+      console.log(`📊 Standard import completed with country: ${batchCountry}`);
+    }
 
     console.log(
       `📊 Standard import completed: ${success} success, ${failed} failed, ${duplicates.length} duplicates`

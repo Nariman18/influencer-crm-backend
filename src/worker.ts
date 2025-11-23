@@ -1,3 +1,4 @@
+// worker.ts
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.worker" });
 import redisQueue, { setupEventListeners } from "./lib/redis-queue";
@@ -7,17 +8,15 @@ import redisQueue, { setupEventListeners } from "./lib/redis-queue";
     console.log("[worker] starting worker process...");
     setupEventListeners();
 
-    // --- start import/export workers here ---
+    // --- start optimized import/export workers here ---
     try {
-      const { startImportWorker } = await import("./workers/import.worker");
-      const { startExportWorker } = await import("./workers/export.worker");
-      const importWorker = startImportWorker();
-      const exportWorker = startExportWorker();
-      console.log(
-        "[worker] import/export workers started:",
-        importWorker,
-        exportWorker
+      const { startOptimizedImportWorker } = await import(
+        "./workers/import.worker"
       );
+      const { startExportWorker } = await import("./workers/export.worker");
+      const importWorker = startOptimizedImportWorker(); // Use optimized worker
+      const exportWorker = startExportWorker();
+      console.log("[worker] optimized import/export workers started");
     } catch (e) {
       console.warn("[worker] failed to start import/export workers:", e);
     }
@@ -28,7 +27,7 @@ import redisQueue, { setupEventListeners } from "./lib/redis-queue";
     console.log("   -", redisQueue.followUpQueue.name);
     console.log("   - influencer-imports");
     console.log("   - influencer-exports");
-    // Keep process alive; Workers do this by default.
+
     process.on("SIGINT", () => {
       console.log("[worker] SIGINT received, shutting down...");
       process.exit(0);

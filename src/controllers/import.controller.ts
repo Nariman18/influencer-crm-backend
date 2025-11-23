@@ -1,31 +1,19 @@
-// src/controllers/import.controller.ts
+// src/controllers/optimized-import.controller.ts
 import { Response } from "express";
 import multer from "multer";
-import path from "path";
-import fs from "fs";
 import { getPrisma } from "../config/prisma";
 import { enqueueImport } from "../lib/import-export-queue";
 import { AuthRequest } from "../types";
 import { AppError } from "../middleware/errorHandler";
 import crypto from "crypto";
-import { Prisma } from "@prisma/client";
 import { getGcsClient } from "../lib/gcs-client";
+import * as XLSX from "xlsx";
 
 const prisma = getPrisma();
 const GCS_BUCKET = process.env.GCS_BUCKET || "influencers-import-storage";
-
-if (!GCS_BUCKET) {
-  console.warn(
-    "[import.controller] GCS_BUCKET not set — controller cannot upload to GCS"
-  );
-}
-
-// Google Cloud client
 const storageClient = getGcsClient();
 
-/**
- * Multer in-memory storage to upload directly to GCS
- */
+// Use your existing multer configuration
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -33,9 +21,6 @@ const upload = multer({
   },
 });
 
-/**
- * Build GCS object key
- */
 const makeGcsKey = (managerId: string, originalname: string) => {
   const ts = Date.now();
   const rand = crypto.randomBytes(6).toString("hex");
@@ -43,233 +28,152 @@ const makeGcsKey = (managerId: string, originalname: string) => {
   return `imports/${managerId}/${ts}-${rand}-${safeName}`;
 };
 
-/**
- * 💥 FIX: Safe, Zero-DB method using Prisma DMMF.
- * This completely avoids the "Argument `id` must not be null" Prisma error.
- */
-const importJobFields =
-  Prisma.dmmf.datamodel.models
-    .find((m) => m.name === "ImportJob")
-    ?.fields.map((f) => f.name) ?? [];
+const analyzeFile = async (buffer: Buffer, filename: string) => {
+  try {
+    let estimatedRows = 0;
+    let columns: string[] = [];
 
-const hasImportJobField = (field: string) => {
-  return importJobFields.includes(field);
+    if (filename.endsWith(".xlsx")) {
+      const workbook = XLSX.read(buffer, {
+        type: "buffer",
+        sheetRows: 10,
+        cellStyles: false,
+        cellHTML: false,
+      });
+
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const range = XLSX.utils.decode_range(worksheet["!ref"]!);
+
+      estimatedRows = range.e.r;
+
+      if (range.e.r > 0) {
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const cell = worksheet[XLSX.utils.encode_cell({ r: 0, c })];
+          if (cell && cell.v) {
+            columns.push(String(cell.v));
+          }
+        }
+      }
+    } else if (filename.endsWith(".csv")) {
+      const text = buffer.toString();
+      const lines = text.split("\n");
+      estimatedRows = Math.max(0, lines.length - 1);
+
+      if (lines.length > 0) {
+        columns = lines[0]
+          .split(",")
+          .map((col) => col.trim().replace(/^"|"$/g, ""));
+      }
+    }
+
+    return {
+      estimatedRows,
+      columns,
+      hasHeaders: columns.length > 0,
+    };
+  } catch (error) {
+    console.warn("File analysis failed, using defaults:", error);
+    return {
+      estimatedRows: 1000,
+      columns: [],
+      hasHeaders: false,
+    };
+  }
 };
 
-export const ImportController = {
+const estimateProcessingTime = (rows: number) => {
+  if (rows < 1000) return "1-2 minutes";
+  if (rows < 5000) return "2-5 minutes";
+  if (rows < 20000) return "5-10 minutes";
+  if (rows < 50000) return "10-20 minutes";
+  if (rows < 100000) return "20-30 minutes";
+  return "30+ minutes";
+};
+
+export const OptimizedImportController = {
   importInfluencers: [
     upload.single("file"),
     async (req: AuthRequest, res: Response) => {
       try {
         if (!req.user?.id) throw new AppError("Not authenticated", 401);
 
-        const file = (req as any).file as Express.Multer.File | undefined;
+        const file = (req as any).file as Express.Multer.File;
         if (!file) throw new AppError("File required", 400);
 
-        // Create initial ImportJob row
-        const jobRecord = await prisma.importJob.create({
+        // Quick analysis for optimization
+        const fileAnalysis = await analyzeFile(file.buffer, file.originalname);
+
+        console.log(
+          `📊 File analysis: ${fileAnalysis.estimatedRows} rows, ${file.size} bytes`
+        );
+
+        // Create import job with analysis data - FIXED: Use proper Prisma types
+        const importJob = await prisma.importJob.create({
           data: {
             managerId: req.user.id,
             filename: file.originalname,
             status: "PENDING",
+            totalRows: fileAnalysis.estimatedRows,
+            metadata: {
+              // This will work after schema update
+              fileSize: file.size,
+              estimatedRows: fileAnalysis.estimatedRows,
+              isLargeFile: fileAnalysis.estimatedRows > 10000,
+              columns: fileAnalysis.columns,
+              hasHeaders: fileAnalysis.hasHeaders,
+              analyzedAt: new Date().toISOString(),
+            },
           },
         });
 
-        let filePath = "";
-        let fileUrl: string | null = null;
+        // Upload to GCS
+        const key = makeGcsKey(req.user.id, file.originalname);
+        const bucket = storageClient.bucket(GCS_BUCKET);
+        const gcsFile = bucket.file(key);
 
-        if (GCS_BUCKET) {
-          const key = makeGcsKey(req.user.id, file.originalname);
-          const bucket = storageClient.bucket(GCS_BUCKET);
-          const gcsFile = bucket.file(key);
-
-          // Upload file buffer to Google Cloud Storage
-          await gcsFile.save(file.buffer, {
+        await gcsFile.save(file.buffer, {
+          metadata: {
+            contentType: file.mimetype,
             metadata: {
-              contentType: file.mimetype || "application/octet-stream",
-              metadata: {
-                originalName: file.originalname,
-                importJobId: jobRecord.id,
-              },
+              importJobId: importJob.id,
+              estimatedRows: fileAnalysis.estimatedRows,
+              managerId: req.user.id,
+              isLargeFile: fileAnalysis.estimatedRows > 10000,
             },
-            resumable: false,
-            public: false,
-          });
+          },
+          resumable: false,
+        });
 
-          filePath = `gs://${GCS_BUCKET}/${key}`;
+        const filePath = `gs://${GCS_BUCKET}/${key}`;
 
-          // Generate signed URL (optional)
-          try {
-            const signedUrlArr = await gcsFile.getSignedUrl({
-              action: "read",
-              expires: Date.now() + 1000 * 60 * 60 * 24, // 24 hours
-            });
-            fileUrl = signedUrlArr[0];
-          } catch (e) {
-            console.warn(
-              "[import.controller] Failed to generate signed URL:",
-              e
-            );
-          }
+        // Update import job with file path
+        await prisma.importJob.update({
+          where: { id: importJob.id },
+          data: { filePath },
+        });
 
-          // Update ImportJob record
-          try {
-            const updateData: any = { filePath };
-            if (hasImportJobField("fileUrl") && fileUrl) {
-              updateData.fileUrl = fileUrl;
-            }
-
-            await prisma.importJob.update({
-              where: { id: jobRecord.id },
-              data: updateData,
-            });
-          } catch (uErr) {
-            console.warn(
-              "[import.controller] Failed to persist GCS metadata:",
-              uErr
-            );
-          }
-        } else {
-          // fallback: save locally (dev)
-          const uploadDir = path.join(process.cwd(), "tmp", "imports");
-          fs.mkdirSync(uploadDir, { recursive: true });
-          const localName = `${Date.now()}-${file.originalname}`;
-          const localPath = path.join(uploadDir, localName);
-          await fs.promises.writeFile(localPath, file.buffer);
-
-          filePath = localPath;
-
-          await prisma.importJob.update({
-            where: { id: jobRecord.id },
-            data: { filePath },
-          });
-        }
-
-        // enqueue worker job
+        // Queue with optimized settings - FIXED: Use updated interface
         await enqueueImport({
           managerId: req.user.id,
           filePath,
           filename: file.originalname,
-          importJobId: jobRecord.id,
+          importJobId: importJob.id,
+          isLargeFile: fileAnalysis.estimatedRows > 10000,
+          estimatedRows: fileAnalysis.estimatedRows,
         });
 
         return res.status(202).json({
-          message: "Import queued",
-          jobId: jobRecord.id,
-          filePath,
-          fileUrl,
+          message: "Import queued successfully",
+          jobId: importJob.id,
+          estimatedRows: fileAnalysis.estimatedRows,
+          estimatedTime: estimateProcessingTime(fileAnalysis.estimatedRows),
+          isLargeFile: fileAnalysis.estimatedRows > 10000,
         });
-      } catch (err) {
-        console.error("importInfluencers error:", err);
-        if (err instanceof AppError) throw err;
-        throw new AppError("Failed to queue import", 500);
-      }
-    },
-  ],
-
-  importMultipleFiles: [
-    upload.array("files"),
-    async (req: AuthRequest, res: Response) => {
-      try {
-        if (!req.user?.id) throw new AppError("Not authenticated", 401);
-
-        const files = (req as any).files as Express.Multer.File[] | undefined;
-        if (!files || files.length === 0)
-          throw new AppError("Files required", 400);
-
-        const supportsFileUrl = hasImportJobField("fileUrl");
-
-        const results: Array<{
-          filename: string;
-          jobId: string;
-          filePath?: string;
-          fileUrl?: string | null;
-        }> = [];
-
-        for (const file of files) {
-          const jobRecord = await prisma.importJob.create({
-            data: {
-              managerId: req.user.id,
-              filename: file.originalname,
-              status: "PENDING",
-            },
-          });
-
-          let filePath = "";
-          let fileUrl: string | null = null;
-
-          if (GCS_BUCKET) {
-            const key = makeGcsKey(req.user.id, file.originalname);
-            const bucket = storageClient.bucket(GCS_BUCKET);
-            const gcsFile = bucket.file(key);
-
-            await gcsFile.save(file.buffer, {
-              metadata: {
-                contentType: file.mimetype || "application/octet-stream",
-              },
-              resumable: false,
-              public: false,
-            });
-
-            filePath = `gs://${GCS_BUCKET}/${key}`;
-
-            try {
-              const signedUrlArr = await gcsFile.getSignedUrl({
-                action: "read",
-                expires: Date.now() + 1000 * 60 * 60 * 24,
-              });
-              fileUrl = signedUrlArr[0];
-            } catch (e) {
-              fileUrl = null;
-            }
-
-            const updateData: any = { filePath };
-            if (supportsFileUrl && fileUrl) {
-              updateData.fileUrl = fileUrl;
-            }
-
-            await prisma.importJob.update({
-              where: { id: jobRecord.id },
-              data: updateData,
-            });
-          } else {
-            // fallback: local temp file
-            const uploadDir = path.join(process.cwd(), "tmp", "imports");
-            fs.mkdirSync(uploadDir, { recursive: true });
-            const localName = `${Date.now()}-${file.originalname}`;
-            const localPath = path.join(uploadDir, localName);
-            await fs.promises.writeFile(localPath, file.buffer);
-            filePath = localPath;
-
-            await prisma.importJob.update({
-              where: { id: jobRecord.id },
-              data: { filePath },
-            });
-          }
-
-          await enqueueImport({
-            managerId: req.user.id,
-            filePath,
-            filename: file.originalname,
-            importJobId: jobRecord.id,
-          });
-
-          results.push({
-            filename: file.originalname,
-            jobId: jobRecord.id,
-            filePath,
-            fileUrl,
-          });
-        }
-
-        return res.status(202).json({
-          message: "Batch import queued",
-          jobs: results,
-        });
-      } catch (err) {
-        console.error("importMultipleFiles error:", err);
-        if (err instanceof AppError) throw err;
-        throw new AppError("Failed to queue batch imports", 500);
+      } catch (error) {
+        console.error("Import error:", error);
+        if (error instanceof AppError) throw error;
+        throw new AppError("Failed to process import", 500);
       }
     },
   ],
@@ -281,9 +185,16 @@ export const ImportController = {
       const { jobId } = req.params;
       if (!jobId) throw new AppError("jobId is required", 400);
 
-      const job = await prisma.importJob.findUnique({ where: { id: jobId } });
-      if (!job) throw new AppError("Not found", 404);
+      const job = await prisma.importJob.findUnique({
+        where: { id: jobId },
+        include: {
+          manager: {
+            select: { id: true, name: true, email: true },
+          },
+        },
+      });
 
+      if (!job) throw new AppError("Not found", 404);
       if (job.managerId !== req.user.id)
         throw new AppError("Not authorized", 403);
 
@@ -303,25 +214,34 @@ export const ImportController = {
 
       const job = await prisma.importJob.findUnique({ where: { id: jobId } });
       if (!job) throw new AppError("Not found", 404);
-
       if (job.managerId !== req.user.id)
         throw new AppError("Not authorized", 403);
 
       if (!["PENDING", "PROCESSING"].includes(job.status)) {
         return res.status(400).json({
           message: "Job cannot be cancelled in current status",
+          currentStatus: job.status,
         });
       }
 
       await prisma.importJob.update({
         where: { id: jobId },
         data: {
-          status: "FAILED",
-          errors: [{ error: "Cancelled by user" }] as any,
+          status: "CANCELLED",
+          errors: [
+            {
+              error: "Cancelled by user",
+              cancelledAt: new Date().toISOString(),
+            },
+          ] as any,
         },
       });
 
-      return res.json({ success: true, message: "Job cancelled" });
+      return res.json({
+        success: true,
+        message: "Import job cancelled successfully",
+        jobId: jobId,
+      });
     } catch (err) {
       if (err instanceof AppError) throw err;
       throw new AppError("Failed to cancel import job", 500);
@@ -329,4 +249,4 @@ export const ImportController = {
   },
 };
 
-export default ImportController;
+export default OptimizedImportController;

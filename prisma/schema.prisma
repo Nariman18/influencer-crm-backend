@@ -104,14 +104,16 @@ model ImportJob {
   filename    String
   filePath    String?
   fileUrl     String?  
-  status      String   @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED
+  status      String   @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED | CANCELLED
   totalRows   Int?
   successCount Int?
   failedCount  Int?
-  duplicates  Json?    // optional JSON of duplicates
-  errors      Json?    // optional JSON of errors
+  duplicates  Json?   
+  errors      Json?    
+  metadata    Json?    
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  completedAt DateTime? // Add this field
 
   manager     User     @relation(fields: [managerId], references: [id], onDelete: Cascade)
 

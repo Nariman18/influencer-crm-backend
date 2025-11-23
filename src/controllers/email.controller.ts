@@ -155,13 +155,16 @@ export class EmailService {
           process.env.MAILGUN_FROM_EMAIL ||
           "";
 
-        // Wrap body with shared wrapper
-        const wrappedHtml = buildEmailHtml(body, influencerName, senderAddress);
+        // Pass sender name to buildEmailHtml
+        const wrappedHtml = buildEmailHtml(
+          body,
+          influencerName,
+          senderAddress,
+          user.name || undefined
+        );
 
         const emailLines = [
-          `From: "${
-            user.name || "Influencer CRM Auto Mail"
-          }" <${senderAddress}>`,
+          `From: "${user.name || "Collaboration Team"}" <${senderAddress}>`,
           `To: ${to}`,
           `Subject: ${subject}`,
           "Content-Type: text/html; charset=utf-8",
@@ -216,8 +219,6 @@ export class EmailService {
     throw new Error(errorMessage);
   }
 }
-
-/* Controller functions (sendEmail, bulkSendEmails, etc.) */
 
 export const validateEmailConfig = async (
   req: AuthRequest,
@@ -364,6 +365,7 @@ export const sendEmail = async (
       body = customBody;
     }
 
+    // ✅ Get sender info including name
     const senderUser = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true, googleEmail: true, name: true },
@@ -374,11 +376,12 @@ export const sendEmail = async (
       process.env.MAILGUN_FROM_EMAIL ||
       "";
 
-    // wrap HTML before saving & queuing
+    // Pass sender name to buildEmailHtml
     const wrappedBody = buildEmailHtml(
       body,
       influencer.name || "",
-      senderAddress
+      senderAddress,
+      senderUser?.name || undefined
     );
 
     const email = await prisma.email.create({
@@ -392,13 +395,14 @@ export const sendEmail = async (
       },
     });
 
-    // Interactive/single sends remain immediate (no domain-spacing).
+    // ✅ Pass sender name to queue job
     await redisQueue.addEmailJob({
       userId: req.user.id,
       to: influencer.email!,
       subject,
       body: wrappedBody,
       influencerName: influencer.name,
+      senderName: senderUser?.name || undefined, // ✅ Added this
       emailRecordId: email.id,
       influencerId: influencer.id,
       replyTo: senderAddress,
@@ -460,6 +464,7 @@ export const bulkSendEmails = async (
           })
         : null;
 
+    // ✅ Get sender info including name
     const senderUser = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true, googleEmail: true, name: true },
@@ -516,7 +521,8 @@ export const bulkSendEmails = async (
                   email: influencer.email,
                 }),
                 influencer.name || "",
-                senderAddress
+                senderAddress,
+                senderUser?.name || undefined
               ),
               status: EmailStatus.FAILED,
               errorMessage: `No MX records for domain: ${domain}`,
@@ -526,12 +532,11 @@ export const bulkSendEmails = async (
           continue;
         }
 
-        // Mailgun suppression check (bounces/complaints/unsubscribes)
+        // Mailgun suppression check
         let suppressed = false;
         try {
           suppressed = await isSuppressedByMailgun(to);
         } catch (e) {
-          // network or API hiccup: assume not suppressed (we could also opt to fail-safely)
           console.warn("[bulkSendEmails] mailgun suppression check failed:", e);
         }
         if (suppressed) {
@@ -548,7 +553,8 @@ export const bulkSendEmails = async (
                   email: influencer.email,
                 }),
                 influencer.name || "",
-                senderAddress
+                senderAddress,
+                senderUser?.name || undefined
               ),
               status: EmailStatus.FAILED,
               errorMessage:
@@ -559,7 +565,7 @@ export const bulkSendEmails = async (
           continue;
         }
 
-        // Passed prechecks — build personalized subject/body
+        // Build personalized subject/body
         const personalizedVars = {
           ...variables,
           name: influencer.name,
@@ -570,11 +576,12 @@ export const bulkSendEmails = async (
         const subject = replaceVariables(template.subject, personalizedVars);
         const body = replaceVariables(template.body, personalizedVars);
 
-        // wrap body HTML
+        // ✅ Pass sender name to buildEmailHtml
         const wrappedBody = buildEmailHtml(
           body,
           influencer.name || "",
-          senderAddress
+          senderAddress,
+          senderUser?.name || undefined
         );
 
         const email = await prisma.email.create({
@@ -592,12 +599,13 @@ export const bulkSendEmails = async (
           },
         });
 
-        const jobPayload: any = {
+        const jobPayload: EmailJobData = {
           userId: req.user.id,
           to,
           subject,
           body: wrappedBody,
           influencerName: influencer.name,
+          senderName: senderUser?.name || undefined, // ✅ Added this
           emailRecordId: email.id,
           influencerId: influencer.id,
           replyTo: senderAddress,
@@ -622,17 +630,15 @@ export const bulkSendEmails = async (
       }
     }
 
-    // Queue the jobs using centralized logic in redis-queue.addBulkEmailJobs
-    // pass optional tuning values from env
+    // Queue the jobs
     const jobIds = await redisQueue.addBulkEmailJobs(jobsData, {
       intervalSec: Number(process.env.BULK_SEND_INTERVAL_SEC) || undefined,
       jitterMs: Number(process.env.BULK_SEND_JITTER_MS) || undefined,
     });
 
-    // Update influencers en masse when automation starts (only those actually included)
+    // Update influencers when automation starts
     if (startAutomation) {
       try {
-        // only update influencerIds that we actually included (jobsData mapping)
         const queuedInfluencerIds = jobsData
           .map((j) => j.influencerId)
           .filter(

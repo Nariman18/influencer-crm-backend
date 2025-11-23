@@ -73,6 +73,8 @@ export interface EnqueueImportPayload {
   filePath: string;
   filename: string;
   importJobId: string;
+  isLargeFile?: boolean;
+  estimatedRows?: number;
 }
 
 export interface EnqueueExportPayload {
@@ -82,10 +84,23 @@ export interface EnqueueExportPayload {
 }
 
 export const enqueueImport = async (payload: EnqueueImportPayload) => {
+  // Validate payload
+  if (!payload.importJobId) {
+    throw new Error("importJobId is required");
+  }
+  if (!payload.managerId) {
+    throw new Error("managerId is required");
+  }
+  if (!payload.filePath) {
+    throw new Error("filePath is required");
+  }
+
   const opts: any = {
     ...defaultJobOpts,
     timeout: Number(process.env.IMPORT_JOB_TIMEOUT_MS || 1000 * 60 * 60),
+    jobId: `import-${payload.importJobId}`, // Use consistent job ID format
   };
+
   return importQueue.add(`import-${payload.importJobId}`, payload, opts);
 };
 
@@ -125,15 +140,25 @@ export const publishExportProgress = async (jobId: string, payload: any) => {
 
 async function tryUpsertScheduler(queue: any, schedulerId: string) {
   if (!queue || typeof queue.upsertJobScheduler !== "function") return false;
+
   const objForm = {
     id: schedulerId,
-    repeat: { every: 60_000 },
+    repeat: { every: 60_000 }, // Run every minute
     job: {
-      name: "__scheduler-noop",
-      data: { __noop: true },
-      opts: { removeOnComplete: true, removeOnFail: true },
+      name: "scheduler-health-check", // Use a meaningful name
+      data: {
+        __noop: true, // Mark as no-op job
+        scheduler: true, // Mark as scheduler job
+        timestamp: Date.now(),
+      },
+      opts: {
+        removeOnComplete: true,
+        removeOnFail: true,
+        delay: 1000, // Small delay to avoid immediate execution
+      },
     },
   };
+
   try {
     await (queue as any).upsertJobScheduler(objForm);
     console.log(

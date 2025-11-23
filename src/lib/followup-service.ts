@@ -582,7 +582,8 @@ const handleNoReplyFallback = async (jobData: any) => {
   const wrappedBody = buildEmailHtml(
     personalizedBody,
     influencer.name || "",
-    senderAddress
+    senderAddress,
+    user?.name || undefined
   );
 
   let newEmail;
@@ -610,6 +611,7 @@ const handleNoReplyFallback = async (jobData: any) => {
       subject: personalizedSubject,
       body: wrappedBody,
       influencerName: influencer.name,
+      senderName: user?.name || undefined,
       emailRecordId: newEmail.id,
       influencerId,
       replyTo: user.googleEmail || process.env.MAILGUN_FROM_EMAIL,

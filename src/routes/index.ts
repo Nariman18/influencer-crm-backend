@@ -8,7 +8,7 @@ import emailTemplateRoutes from "./emailTemplate.routes";
 import emailRoutes from "./email.routes";
 import dashboardRoutes from "./dashboard.routes";
 import queueRoutes from "./queue.routes";
-import { ImportController } from "../controllers/import.controller";
+
 import debugQueue from "./debug-queue";
 import importRoutes from "./import.routes";
 import exportRoutes from "./export.routes";

@@ -786,7 +786,7 @@ export const stopAutomation = async (
 
     const now = new Date();
     const notesAppend = `\nAutomation stopped manually by user ${
-      req.user.id || "unknown"
+      req.user.name || "unknown"
     } at ${now.toISOString()}`;
 
     const emailUpdateWhere = {

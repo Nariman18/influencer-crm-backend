@@ -1,3 +1,4 @@
+// src/controllers/emailTemplate.controller.ts
 import { Response } from "express";
 import { getPrisma } from "../config/prisma";
 import { AuthRequest } from "../types";

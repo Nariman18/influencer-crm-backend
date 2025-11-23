@@ -1,6 +1,6 @@
 // src/routes/import.routes.ts
 import { Router } from "express";
-import ImportController from "../controllers/import.controller";
+import { OptimizedImportController } from "../controllers/import.controller";
 import { authenticate } from "../middleware/auth";
 
 const router = Router();
@@ -10,16 +10,17 @@ const router = Router();
 router.post(
   "/influencers",
   authenticate,
-  ...ImportController.importInfluencers
+  OptimizedImportController.importInfluencers
 );
-
-router.post(
-  "/influencers/batch",
+router.get(
+  "/:jobId/status",
   authenticate,
-  ...ImportController.importInfluencers
+  OptimizedImportController.getImportStatus
 );
-
-router.get("/:jobId/status", authenticate, ImportController.getImportStatus);
-router.delete("/:jobId", authenticate, ImportController.cancelImportJob);
+router.delete(
+  "/:jobId",
+  authenticate,
+  OptimizedImportController.cancelImportJob
+);
 
 export default router;

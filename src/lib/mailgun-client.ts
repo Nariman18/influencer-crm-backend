@@ -7,9 +7,8 @@ const DOMAIN = process.env.MAILGUN_DOMAIN || "";
 const BASE = process.env.MAILGUN_BASE_URL || "https://api.mailgun.net/v3";
 
 const FROM_EMAIL = process.env.MAILGUN_FROM_EMAIL || "";
-const FROM_NAME = process.env.MAILGUN_FROM_NAME || "Influencer CRM";
+const FROM_NAME = process.env.MAILGUN_FROM_NAME || "Collaboration Team"; // ✅ Fallback to professional name
 
-/** SMTP fallback considered "configured" when all three vars are present */
 const SMTP_CONFIGURED =
   Boolean(process.env.MAILGUN_SMTP_HOST) &&
   Boolean(process.env.MAILGUN_SMTP_USER) &&
@@ -31,18 +30,20 @@ if (!FROM_EMAIL || !API_KEY || !DOMAIN) {
   });
 }
 
-const buildFrom = () => {
-  const rawName = String(FROM_NAME || "")
+const buildFrom = (senderName?: string) => {
+  // ✅ Prioritize sender name from user profile
+  const rawName = senderName || FROM_NAME || "";
+  const cleaned = String(rawName)
     .replace(/^["']|["']$/g, "")
-    .trim();
-  const cleaned = rawName
+    .trim()
     .replace(/[\r\n\t]/g, " ")
     .replace(/["<>]/g, "")
     .replace(/,/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 64);
-  const safeName = cleaned || "No Reply";
+
+  const safeName = cleaned || "Collaboration Team";
 
   const validEmail =
     typeof FROM_EMAIL === "string" &&
@@ -56,10 +57,10 @@ const buildFrom = () => {
 
 type SendResult = {
   success: boolean;
-  id?: string; // raw Mailgun id (may include angle brackets)
-  messageId?: string; // same as id (for compatibility)
-  messageIdNormalized?: string; // id normalized (no angle brackets)
-  message?: string; // Mailgun response message e.g. "Queued. Thank you."
+  id?: string;
+  messageId?: string;
+  messageIdNormalized?: string;
+  message?: string;
   error?: string;
 };
 
@@ -95,6 +96,7 @@ export const sendMailgunEmail = async (opts: {
   html: string;
   replyTo?: string;
   headers?: Record<string, string>;
+  senderName?: string; // ✅ Add sender name parameter
 }): Promise<SendResult> => {
   if (!isEmailValid(opts.to)) {
     const msg = `Invalid recipient email: "${opts.to}"`;
@@ -107,9 +109,8 @@ export const sendMailgunEmail = async (opts: {
     return { success: false, error: msg };
   }
 
-  const fromHeader = buildFrom();
+  const fromHeader = buildFrom(opts.senderName); // ✅ Pass sender name
 
-  // Early SMTP fallback when API config missing
   if (!API_KEY || !DOMAIN) {
     const msg = "Mailgun API key or domain missing in environment";
     console.error("[mailgun-client] " + msg);
@@ -157,23 +158,34 @@ export const sendMailgunEmail = async (opts: {
 
   if (opts.replyTo) form.append("h:Reply-To", opts.replyTo);
 
-  // Generate a unique Message-ID to help tracking
+  // Disabling tracking to avoid spam filters
+  form.append("o:tracking", "yes");
+  form.append("o:tracking-clicks", "no");
+  form.append("o:tracking-opens", "no");
+
+  // Generate unique Message-ID
   const messageIdDomain = DOMAIN || "mail.imx.agency";
   const uniqueId = `${Date.now()}-${Math.random()
     .toString(36)
     .substring(2, 15)}`;
   form.append("h:Message-ID", `<${uniqueId}@${messageIdDomain}>`);
 
+  // Required headers for deliverability
   form.append("h:Date", new Date().toUTCString());
   form.append("h:MIME-Version", "1.0");
   form.append("h:Content-Type", "text/html; charset=UTF-8");
 
+  // Adding List-Unsubscribe header
   if (opts.replyTo) {
     form.append(
       "h:List-Unsubscribe",
       `<mailto:${opts.replyTo}?subject=Unsubscribe>`
     );
   }
+
+  // ✅ Add custom headers for better deliverability
+  form.append("h:X-Mailer", "Collaboration Platform 1.0");
+  form.append("h:Precedence", "bulk");
 
   if (opts.headers) {
     for (const [k, v] of Object.entries(opts.headers)) {
@@ -189,7 +201,6 @@ export const sendMailgunEmail = async (opts: {
     replyTo: opts.replyTo,
   });
 
-  // Retry/backoff configuration (from env or defaults)
   const MAX_RETRIES = Math.max(1, Number(process.env.MAILGUN_MAX_RETRIES || 5));
   const BASE_DELAY_MS = Math.max(
     100,
@@ -216,7 +227,6 @@ export const sendMailgunEmail = async (opts: {
         const respData = err?.response?.data;
         let recommendedDelaySec: number | null = null;
 
-        // Try to parse provider suggested retry_seconds if present
         try {
           if (respData && typeof respData === "object") {
             if (
@@ -240,13 +250,10 @@ export const sendMailgunEmail = async (opts: {
           status === 429 ||
           (status >= 500 && status < 600);
 
-        // On permanent 4xx (other than 421/429) don't retry
         if (!isTransient) {
-          // rethrow - higher level will attempt SMTP fallback
           throw err;
         }
 
-        // Logging for transient errors
         const msg =
           respData && typeof respData === "object"
             ? JSON.stringify(respData)
@@ -260,7 +267,6 @@ export const sendMailgunEmail = async (opts: {
           }
         );
 
-        // compute delay
         let delayMs: number;
         if (recommendedDelaySec && Number.isFinite(recommendedDelaySec)) {
           delayMs = Math.min(
@@ -273,14 +279,11 @@ export const sendMailgunEmail = async (opts: {
             Math.round(BASE_DELAY_MS * Math.pow(2, attempt - 1))
           );
         }
-        // jitter 0-500ms
         delayMs += Math.floor(Math.random() * 500);
 
-        // last attempt -> break and throw
         if (attempt >= MAX_RETRIES) break;
 
         await new Promise((r) => setTimeout(r, delayMs));
-        // continue to retry
       }
     }
     throw new Error("Mailgun post failed after retries");
@@ -317,7 +320,6 @@ export const sendMailgunEmail = async (opts: {
       responseData || err?.message || err
     );
 
-    // Try SMTP fallback if configured
     if (SMTP_CONFIGURED) {
       console.warn(
         "[mailgun-client] Mailgun API failed; attempting SMTP fallback",

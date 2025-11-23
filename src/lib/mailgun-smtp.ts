@@ -115,7 +115,7 @@ export const sendViaSmtp = async (opts: {
   const sendPromise = transporter.sendMail({
     from:
       opts.from ||
-      `"${process.env.MAILGUN_FROM_NAME || "Influencer CRM Auto Mail"}" <${
+      `"${process.env.MAILGUN_FROM_NAME || "Collaboration Team"}" <${
         process.env.MAILGUN_FROM_EMAIL || user
       }>`,
     to: opts.to,

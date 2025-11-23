@@ -1,6 +1,7 @@
 // routes/webhooks.ts
 import express from "express";
 import { getPrisma } from "../config/prisma";
+import { isPermanentBounce, addToBounceList } from "../lib/mailgun-helpers";
 
 const router = express.Router();
 const prisma = getPrisma();
@@ -30,82 +31,97 @@ router.post("/mailgun", express.json(), async (req, res) => {
     const delivery =
       payload?.["delivery-status"] || payload?.delivery_status || null;
 
+    // ✅ Extract error message for categorization
+    const errorMessage =
+      delivery?.message || payload?.reason || delivery?.description || "";
+
     // If we have CRM email id, update that email row with event info
     if (crmEmailId) {
       try {
-        const fullJson = JSON.stringify(payload);
+        const updateData: any = {
+          errorMessage: JSON.stringify(payload).slice(0, 20000),
+        };
+
+        // Set status based on event
+        if (event === "delivered") {
+          updateData.status = "SENT";
+          updateData.sentAt = new Date();
+        } else if (event === "opened") {
+          updateData.status = "OPENED";
+        } else if (event === "failed" || event === "bounced") {
+          updateData.status = "FAILED";
+        }
+
         await prisma.email.update({
           where: { id: String(crmEmailId) },
-          data: {
-            errorMessage: fullJson.slice(0, 20000),
-            status:
-              event === "delivered"
-                ? "SENT"
-                : event === "opened"
-                ? "OPENED"
-                : "FAILED",
-            ...(event === "delivered" ? { sentAt: new Date() } : {}),
-          },
+          data: updateData,
         });
       } catch (uErr: any) {
-        // Prisma not found returns P2025; only log other errors
         if (uErr?.code !== "P2025") {
-          console.warn("webhook email update error", uErr);
+          console.warn("[webhook] email update error", uErr);
         }
       }
     }
 
-    // examine delivery reasons to decide permanent vs temporary
+    // ✅ Enhanced permanent bounce detection
     const severity = payload?.severity || delivery?.severity || null;
     const bounceType =
       delivery?.["bounce-type"] || delivery?.bounce_type || null;
     const code = delivery?.code || null;
-    const reason = payload?.reason || delivery?.message || null;
 
     const isPermanent =
       severity === "permanent" ||
       bounceType === "hard" ||
       (typeof code === "number" && code >= 500 && code < 600) ||
-      String(reason || "")
-        .toLowerCase()
-        .includes("not delivering") ||
-      String(reason || "")
-        .toLowerCase()
-        .includes("mailbox unavailable");
+      isPermanentBounce(errorMessage);
 
     if (isPermanent && recipient) {
+      console.warn(
+        `[webhook] PERMANENT BOUNCE detected for ${recipient}:`,
+        errorMessage
+      );
+
       try {
-        // Find influencers that have this recipient email
+        // Add to Mailgun bounce list
+        await addToBounceList(
+          recipient,
+          errorMessage || "Webhook-detected permanent bounce"
+        );
+
+        // Find influencers with this recipient email
         const infls = await prisma.influencer.findMany({
-          where: { email: recipient },
+          where: {
+            email: recipient,
+          },
           select: { id: true },
         });
         const influencerIds = infls.map((i) => i.id);
 
         if (influencerIds.length > 0) {
-          // mark influencer(s) rejected
+          // Mark influencer(s) rejected
           await prisma.influencer.updateMany({
             where: { id: { in: influencerIds } },
-            data: { status: "REJECTED" }, // ensure this matches your enum name
+            data: { status: "REJECTED" },
           });
 
-          // mark any email records for those influencers FAILED and persist the event
+          console.log(
+            `[webhook] Marked ${influencerIds.length} influencers as REJECTED: ${recipient}`
+          );
+
+          // Mark any email records for those influencers FAILED
           await prisma.email.updateMany({
             where: { influencerId: { in: influencerIds } },
             data: {
               status: "FAILED",
-              errorMessage: JSON.stringify({ mailgunEvent: payload }).slice(
-                0,
-                20000
-              ),
+              errorMessage: JSON.stringify({
+                mailgunEvent: payload,
+                reason: "Permanent bounce detected via webhook",
+              }).slice(0, 20000),
             },
           });
-        } else {
-          // no influencer found — optionally try to update by recipient in a "to" field if you have one
-          // but avoid using unknown fields that Prisma doesn't expose.
         }
       } catch (e) {
-        console.warn("webhook permanent failure DB updates failed:", e);
+        console.warn("[webhook] permanent failure DB updates failed:", e);
       }
     }
 
@@ -120,10 +136,10 @@ router.post("/mailgun", express.json(), async (req, res) => {
           await prisma.email.update({
             where: { id: String(crmEmailId) },
             data: {
-              errorMessage: JSON.stringify({ mailgunEvent: payload }).slice(
-                0,
-                20000
-              ),
+              errorMessage: JSON.stringify({
+                mailgunEvent: payload,
+                reason: "Temporary failure - will retry",
+              }).slice(0, 20000),
             },
           });
         } catch (e) {

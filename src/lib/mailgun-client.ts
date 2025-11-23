@@ -156,7 +156,13 @@ export const sendMailgunEmail = async (opts: {
   form.append("subject", opts.subject);
   form.append("html", opts.html);
 
-  if (opts.replyTo) form.append("h:Reply-To", opts.replyTo);
+  const replyToAddress =
+    process.env.MAILGUN_REPLY_TO_EMAIL ||
+    opts.replyTo ||
+    process.env.MAILGUN_FROM_EMAIL!;
+  if (replyToAddress) {
+    form.append("h:Reply-To", replyToAddress);
+  }
 
   // Disabling tracking to avoid spam filters
   form.append("o:tracking", "yes");

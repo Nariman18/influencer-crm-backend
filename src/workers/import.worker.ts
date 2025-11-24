@@ -87,7 +87,10 @@ async function isJobCancelled(importJobId: string): Promise<boolean> {
   }
 }
 
-// Simplified duplicate detection that actually works
+/**
+ * IMPROVED: Comprehensive duplicate detection that matches Excel's behavior
+ * Checks duplicates by NAME OR HANDLE (either one matching = duplicate)
+ */
 async function checkBatchDuplicates(
   rows: ParsedRow[],
   managerId: string
@@ -96,22 +99,38 @@ async function checkBatchDuplicates(
 
   if (rows.length === 0) return duplicateMap;
 
-  // Collect all names for checking
+  // Collect names AND handles for comprehensive checking
   const names = rows
     .filter((row) => row.name)
     .map((row) => row.name!.toLowerCase().trim());
 
-  if (names.length === 0) return duplicateMap;
+  const handles = rows
+    .filter((row) => row.instagramHandle)
+    .map((row) => String(row.instagramHandle).toLowerCase().trim());
 
   try {
-    // Just check by name (most influencers have unique names)
+    // Query by BOTH name and handle to get all potential duplicates
     const existing = await prisma.influencer.findMany({
       where: {
         managerId,
-        name: {
-          in: names,
-          mode: "insensitive",
-        },
+        OR: [
+          names.length > 0
+            ? {
+                name: {
+                  in: names,
+                  mode: "insensitive",
+                },
+              }
+            : undefined,
+          handles.length > 0
+            ? {
+                instagramHandle: {
+                  in: handles,
+                  mode: "insensitive",
+                },
+              }
+            : undefined,
+        ].filter(Boolean) as any,
       },
       select: {
         name: true,
@@ -119,32 +138,41 @@ async function checkBatchDuplicates(
       },
     });
 
-    // Create lookup map: name|handle -> true
-    const existingMap = new Map<string, boolean>();
+    // Create lookup maps for BOTH name and handle
+    const existingByName = new Map<string, boolean>();
+    const existingByHandle = new Map<string, boolean>();
+
     existing.forEach((inf) => {
-      const name = (inf.name || "").toLowerCase().trim();
-      const handle = (inf.instagramHandle || "").toLowerCase().trim();
-      const key = `${name}|${handle}`;
-      existingMap.set(key, true);
+      if (inf.name) {
+        const name = inf.name.toLowerCase().trim();
+        existingByName.set(name, true);
+      }
+      if (inf.instagramHandle) {
+        const handle = String(inf.instagramHandle).toLowerCase().trim();
+        existingByHandle.set(handle, true);
+      }
     });
 
-    // Check each row against existing
+    // Check each row for duplicates - mark as duplicate if EITHER name OR handle matches
     rows.forEach((row) => {
-      if (!row.name) return;
-
-      const name = row.name.toLowerCase().trim();
+      const name = row.name ? row.name.toLowerCase().trim() : "";
       const handle = row.instagramHandle
         ? String(row.instagramHandle).toLowerCase().trim()
         : "";
-      const key = `${name}|${handle}`;
 
-      if (existingMap.has(key)) {
+      const isDuplicateName = name && existingByName.has(name);
+      const isDuplicateHandle = handle && existingByHandle.has(handle);
+
+      // Mark as duplicate if EITHER name OR handle matches (matching typical Excel behavior)
+      if (isDuplicateName || isDuplicateHandle) {
+        // Use name as primary key, fall back to handle
+        const key = name || handle;
         duplicateMap.set(key, row);
       }
     });
 
     console.log(
-      `🔍 Duplicate check: ${duplicateMap.size} duplicates found out of ${rows.length} rows`
+      `🔍 Duplicate check: ${duplicateMap.size} duplicates found out of ${rows.length} rows (checking by name OR handle)`
     );
   } catch (error) {
     console.error("❌ Duplicate check failed:", error);

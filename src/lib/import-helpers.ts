@@ -15,38 +15,47 @@ export interface ParsedRow {
 }
 
 /**
- * Normalize Unicode email to plain ASCII
+ * Normalize Unicode email to plain ASCII (more permissive version)
  */
 export const normalizeUnicodeEmail = (email: string): string => {
   if (!email) return email;
 
-  // Normalize Unicode characters to their closest ASCII equivalents
-  return email
-    .normalize("NFKD") // Normalize Unicode
-    .replace(/[\u{1D400}-\u{1D7FF}]/gu, (char) => {
-      // Map mathematical bold characters to regular characters
-      const codePoint = char.codePointAt(0);
-      if (codePoint && codePoint >= 0x1d400 && codePoint <= 0x1d7ff) {
-        // Mathematical bold ranges to regular ranges
-        if (codePoint >= 0x1d400 && codePoint <= 0x1d419) {
-          // Bold uppercase A-Z
-          return String.fromCodePoint(codePoint - 0x1d400 + 0x41);
-        } else if (codePoint >= 0x1d41a && codePoint <= 0x1d433) {
-          // Bold lowercase a-z
-          return String.fromCodePoint(codePoint - 0x1d41a + 0x61);
-        } else if (codePoint >= 0x1d7ce && codePoint <= 0x1d7d7) {
-          // Bold digits 0-9
-          return String.fromCodePoint(codePoint - 0x1d7ce + 0x30);
-        }
+  let normalized = email;
+
+  // Only normalize mathematical bold/fancy Unicode characters
+  normalized = normalized.replace(/[\u{1D400}-\u{1D7FF}]/gu, (char) => {
+    const codePoint = char.codePointAt(0);
+    if (codePoint && codePoint >= 0x1d400 && codePoint <= 0x1d7ff) {
+      // Mathematical bold ranges to regular ranges
+      if (codePoint >= 0x1d400 && codePoint <= 0x1d419) {
+        // Bold uppercase A-Z
+        return String.fromCodePoint(codePoint - 0x1d400 + 0x41);
+      } else if (codePoint >= 0x1d41a && codePoint <= 0x1d433) {
+        // Bold lowercase a-z
+        return String.fromCodePoint(codePoint - 0x1d41a + 0x61);
+      } else if (codePoint >= 0x1d7ce && codePoint <= 0x1d7d7) {
+        // Bold digits 0-9
+        return String.fromCodePoint(codePoint - 0x1d7ce + 0x30);
       }
-      return char;
-    })
-    .replace(/[^\x00-\x7F]/g, "") // Remove any remaining non-ASCII characters
+    }
+    return char;
+  });
+
+  // Use NFKC (compatibility composition) instead of NFKD for better international support
+  normalized = normalized.normalize("NFKC");
+
+  // Only remove control characters and zero-width spaces, keep international characters
+  normalized = normalized
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, "") // Remove control characters
+    .replace(/[\u200B-\u200D\uFEFF]/g, "") // Remove zero-width spaces
     .trim();
+
+  return normalized;
 };
 
 /**
  * Returns true when a given cell looks like a DM/no-email marker.
+ * Made less aggressive to avoid false positives.
  */
 export const looksLikeDM = (s: string | null | undefined): boolean => {
   if (s === null || s === undefined) return false;
@@ -55,6 +64,10 @@ export const looksLikeDM = (s: string | null | undefined): boolean => {
 
   // If it contains @, it's likely an email, not a DM marker
   if (v.includes("@")) return false;
+
+  // Single character placeholders should NOT be treated as DM markers
+  // People often use "-" or "—" as empty placeholders
+  if (v.length === 1) return false;
 
   // Exact match markers only (don't use .includes() to avoid false positives)
   const exactMarkers = [
@@ -73,8 +86,6 @@ export const looksLikeDM = (s: string | null | undefined): boolean => {
     "noemail",
     "n/a",
     "na",
-    "-",
-    "—",
     "none",
     "немає",
     "нет",
@@ -91,13 +102,16 @@ export const looksLikeDM = (s: string | null | undefined): boolean => {
     "instagram dm",
     "direct message",
     "no email",
+    "contact through dm",
+    "contact via dm",
   ];
   for (const m of phraseMarkers) {
     if (v.includes(m)) return true;
   }
 
-  // Pattern: contains "dm" with special characters around it (not part of email)
-  if (/\bdm\b/.test(v)) return true;
+  // Pattern: contains "dm" with word boundaries (not part of email)
+  // But only if it's not a single word (to avoid false positives)
+  if (v.length > 2 && /\bdm\b/.test(v)) return true;
 
   return false;
 };
@@ -232,13 +246,16 @@ export const emailLooksValid = (s: any): boolean => {
   let normalized = extractCellText(s).trim();
   if (!normalized) return false;
 
-  // Normalize Unicode characters first
-  normalized = normalizeUnicodeEmail(normalized);
-
-  // Skip DM markers
+  // Skip DM markers BEFORE normalization to catch obvious non-emails
   if (looksLikeDM(normalized.toLowerCase())) return false;
 
-  // More permissive email check for your data
+  // Normalize Unicode characters
+  normalized = normalizeUnicodeEmail(normalized);
+
+  // After normalization, if it's empty, reject
+  if (!normalized) return false;
+
+  // Must have @ symbol
   const atIndex = normalized.indexOf("@");
   if (atIndex < 1) return false;
 
@@ -327,7 +344,7 @@ export function mappedToCreateMany(
 }
 
 /**
- * normalizeParsedRow - SIMPLE CLEANUP ONLY
+ * normalizeParsedRow - ENHANCED with Instagram handle fallback for name
  */
 export function normalizeParsedRow(row: ParsedRow): ParsedRow {
   const normalized: ParsedRow = {
@@ -335,21 +352,33 @@ export function normalizeParsedRow(row: ParsedRow): ParsedRow {
     email: row.email ? String(row.email).trim().toLowerCase() : null,
     instagramHandle: row.instagramHandle
       ? String(row.instagramHandle).trim()
-      : null, // NO @ removal!
+      : null,
     link: row.link ? String(row.link).trim() : null,
     followers: null,
     country: row.country ? String(row.country).trim() : null,
     notes: row.notes ? String(row.notes).trim() : null,
   };
 
-  // Final fallback if no name
-  if (!normalized.name || normalized.name.trim() === "") {
-    normalized.name = "Unknown Influencer";
-  }
-
   // Clean up email - handle "DM" markers properly
   if (normalized.email && looksLikeDM(normalized.email.toLowerCase())) {
     normalized.email = null;
+  }
+
+  // CRITICAL FIX: If no name but have Instagram handle, use handle as name
+  if (!normalized.name || normalized.name.trim() === "") {
+    if (normalized.instagramHandle) {
+      // Try to extract username from Instagram URL
+      const username = extractInstagramUsername(normalized.instagramHandle);
+      if (username) {
+        normalized.name = username;
+      } else {
+        // Use the handle itself as name
+        normalized.name = normalized.instagramHandle;
+      }
+    } else {
+      // Last resort fallback
+      normalized.name = "Unknown Influencer";
+    }
   }
 
   return normalized;

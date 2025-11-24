@@ -36,6 +36,16 @@ interface ImportJobData {
   timestamp?: number;
 }
 
+// Statistics tracker for debugging
+interface SkipStatistics {
+  emptyRows: number;
+  missingName: number;
+  invalidEmail: number;
+  duplicates: number;
+  otherErrors: number;
+  total: number;
+}
+
 async function downloadFromGCS(filePath: string) {
   if (!filePath) {
     throw new Error("File path is required");
@@ -215,7 +225,7 @@ function debugRowData(rowNumber: number, values: any[]): void {
   });
 }
 
-// Process large files with better performance
+// Process large files with better performance and detailed logging
 async function processLargeImport(job: Job<ImportJobData>) {
   const BATCH_SIZE = 2000;
   const STATUS_INTERVAL = 2000;
@@ -259,7 +269,18 @@ async function processLargeImport(job: Job<ImportJobData>) {
     const errors: any[] = [];
     const duplicates: any[] = [];
 
+    // Track skip reasons for debugging
+    const skipStats: SkipStatistics = {
+      emptyRows: 0,
+      missingName: 0,
+      invalidEmail: 0,
+      duplicates: 0,
+      otherErrors: 0,
+      total: 0,
+    };
+
     let batchCountry: string | null = null;
+    let totalRowsRead = 0;
 
     const emitProgress = async () => {
       await publishImportProgress(importJobId, {
@@ -307,6 +328,7 @@ async function processLargeImport(job: Job<ImportJobData>) {
             : "";
           const key = `${name}|${handle}`;
           if (duplicateMap.has(key)) {
+            skipStats.duplicates++;
             duplicates.push({
               name: row.name,
               instagramHandle: row.instagramHandle,
@@ -337,6 +359,7 @@ async function processLargeImport(job: Job<ImportJobData>) {
                 success++;
               } catch (e) {
                 failed++;
+                skipStats.otherErrors++;
               }
             }
           }
@@ -347,6 +370,7 @@ async function processLargeImport(job: Job<ImportJobData>) {
       } catch (error) {
         console.error("Batch processing failed:", error);
         failed += buffer.length;
+        skipStats.otherErrors += buffer.length;
         errors.push({
           batch: `rows_${processed - buffer.length + 1}_to_${processed}`,
           error:
@@ -360,6 +384,7 @@ async function processLargeImport(job: Job<ImportJobData>) {
       let isFirstRow = true;
 
       for await (const row of worksheet) {
+        totalRowsRead++;
         const values = (row.values || []) as any[];
         if (!Array.isArray(values)) continue;
 
@@ -378,6 +403,7 @@ async function processLargeImport(job: Job<ImportJobData>) {
         }
 
         if (!hasRowData(values)) {
+          skipStats.emptyRows++;
           continue;
         }
 
@@ -413,12 +439,15 @@ async function processLargeImport(job: Job<ImportJobData>) {
 
           const normalized = normalizeParsedRow(rowWithDMNotes);
 
+          // ENHANCED: Now accepts rows with Instagram handles even without names
           if (!normalized.name || normalized.name.trim() === "") {
+            // This should rarely happen now due to Instagram fallback
             failed++;
+            skipStats.missingName++;
             errors.push({
-              row: processed,
-              error: "Missing name! Name is required",
-              data: normalized,
+              row: totalRowsRead,
+              error: "Missing name and Instagram handle",
+              data: { link, email: emailCandidate },
             });
             continue;
           }
@@ -438,8 +467,9 @@ async function processLargeImport(job: Job<ImportJobData>) {
           }
         } catch (error) {
           failed++;
+          skipStats.otherErrors++;
           errors.push({
-            row: processed,
+            row: totalRowsRead,
             error:
               error instanceof Error ? error.message : "Row processing failed",
           });
@@ -454,6 +484,38 @@ async function processLargeImport(job: Job<ImportJobData>) {
 
     await emitProgress();
 
+    // Calculate total skipped
+    skipStats.total =
+      skipStats.emptyRows +
+      skipStats.missingName +
+      skipStats.invalidEmail +
+      skipStats.duplicates +
+      skipStats.otherErrors;
+
+    // Log detailed statistics
+    console.log(`
+📊 IMPORT STATISTICS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total rows read:        ${totalRowsRead}
+Processed data rows:    ${processed}
+Successfully imported:  ${success}
+Failed:                 ${failed}
+
+SKIP BREAKDOWN:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Empty rows:            ${skipStats.emptyRows}
+Missing name/handle:   ${skipStats.missingName}
+Duplicates:            ${skipStats.duplicates}
+Other errors:          ${skipStats.otherErrors}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total skipped:         ${skipStats.total}
+
+EXPECTED vs ACTUAL:
+Your Excel: 4898 unique records
+CRM Import: ${success} records
+Difference: ${4898 - success} records
+    `);
+
     const finalStatus =
       failed === 0 && duplicates.length === 0
         ? "COMPLETED"
@@ -467,6 +529,11 @@ async function processLargeImport(job: Job<ImportJobData>) {
       duplicates: duplicates.length > 0 ? (duplicates as any) : undefined,
       errors: errors.length > 0 ? (errors as any) : undefined,
       completedAt: new Date(),
+      metadata: {
+        skipStatistics: skipStats,
+        totalRowsRead,
+        batchCountry,
+      } as any,
     });
 
     await publishImportProgress(importJobId, {
@@ -493,6 +560,7 @@ async function processLargeImport(job: Job<ImportJobData>) {
       failed: failed + duplicates.length,
       duplicates,
       errors,
+      skipStatistics: skipStats,
     };
   } catch (error) {
     console.error("Large import processing failed:", error);
@@ -517,7 +585,7 @@ async function processLargeImport(job: Job<ImportJobData>) {
   }
 }
 
-// Standard import for smaller files
+// Standard import for smaller files with enhanced logging
 async function processStandardImport(job: Job<ImportJobData>) {
   const BATCH_SIZE = 1000;
 
@@ -556,6 +624,17 @@ async function processStandardImport(job: Job<ImportJobData>) {
     const rows: any[] = [];
 
     let batchCountry: string | null = null;
+    let totalRowsRead = 0;
+
+    // Track skip reasons
+    const skipStats: SkipStatistics = {
+      emptyRows: 0,
+      missingName: 0,
+      invalidEmail: 0,
+      duplicates: 0,
+      otherErrors: 0,
+      total: 0,
+    };
 
     console.log("🔍 DEBUG: Reading Excel file structure");
 
@@ -575,9 +654,12 @@ async function processStandardImport(job: Job<ImportJobData>) {
     }
 
     worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+      totalRowsRead++;
       if (rowNumber > 1) {
         if (hasRowData(row.values as any[])) {
           rows.push(row.values);
+        } else {
+          skipStats.emptyRows++;
         }
       }
     });
@@ -624,12 +706,14 @@ async function processStandardImport(job: Job<ImportJobData>) {
         const rowWithDMNotes = processDMNotes(parsedRow, rawEmail);
         const normalized = normalizeParsedRow(rowWithDMNotes);
 
+        // ENHANCED: Now accepts rows with Instagram handles even without names
         if (!normalized.name || normalized.name.trim() === "") {
           failed++;
+          skipStats.missingName++;
           errors.push({
-            row: i,
-            error: "Missing name! Name is required",
-            data: normalized,
+            row: i + 2, // +2 because we skip row 1 (header) and arrays are 0-indexed
+            error: "Missing name and Instagram handle",
+            data: { link, email: emailCandidate },
           });
           continue;
         }
@@ -638,8 +722,9 @@ async function processStandardImport(job: Job<ImportJobData>) {
         processed++;
       } catch (error) {
         failed++;
+        skipStats.otherErrors++;
         errors.push({
-          row: i,
+          row: i + 2,
           error: error instanceof Error ? error.message : "Row parsing failed",
         });
       }
@@ -663,6 +748,7 @@ async function processStandardImport(job: Job<ImportJobData>) {
           : "";
         const key = `${name}|${handle}`;
         if (duplicateMap.has(key)) {
+          skipStats.duplicates++;
           duplicates.push({
             name: row.name,
             instagramHandle: row.instagramHandle,
@@ -693,6 +779,7 @@ async function processStandardImport(job: Job<ImportJobData>) {
               success++;
             } catch (e) {
               failed++;
+              skipStats.otherErrors++;
             }
           }
         }
@@ -715,6 +802,38 @@ async function processStandardImport(job: Job<ImportJobData>) {
       throw new Error("Import cancelled by user");
     }
 
+    // Calculate total skipped
+    skipStats.total =
+      skipStats.emptyRows +
+      skipStats.missingName +
+      skipStats.invalidEmail +
+      skipStats.duplicates +
+      skipStats.otherErrors;
+
+    // Log detailed statistics
+    console.log(`
+📊 IMPORT STATISTICS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total rows read:        ${totalRowsRead}
+Processed data rows:    ${processed}
+Successfully imported:  ${success}
+Failed:                 ${failed}
+
+SKIP BREAKDOWN:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Empty rows:            ${skipStats.emptyRows}
+Missing name/handle:   ${skipStats.missingName}
+Duplicates:            ${skipStats.duplicates}
+Other errors:          ${skipStats.otherErrors}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total skipped:         ${skipStats.total}
+
+EXPECTED vs ACTUAL:
+Your Excel: 4898 unique records
+CRM Import: ${success} records
+Difference: ${4898 - success} records
+    `);
+
     const finalStatus =
       failed === 0 && duplicates.length === 0
         ? "COMPLETED"
@@ -728,6 +847,11 @@ async function processStandardImport(job: Job<ImportJobData>) {
       duplicates: duplicates.length > 0 ? (duplicates as any) : undefined,
       errors: errors.length > 0 ? (errors as any) : undefined,
       completedAt: new Date(),
+      metadata: {
+        skipStatistics: skipStats,
+        totalRowsRead,
+        batchCountry,
+      } as any,
     });
 
     console.log(
@@ -740,6 +864,7 @@ async function processStandardImport(job: Job<ImportJobData>) {
       failed: failed + duplicates.length,
       duplicates,
       errors,
+      skipStatistics: skipStats,
     };
   } catch (error) {
     console.error("Standard import processing failed:", error);

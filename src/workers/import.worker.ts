@@ -541,7 +541,6 @@ Total skipped:         ${skipStats.total}
 EXPECTED vs ACTUAL:
 Your Excel: 4898 unique records
 CRM Import: ${success} records
-Difference: ${4898 - success} records
     `);
 
     const finalStatus =

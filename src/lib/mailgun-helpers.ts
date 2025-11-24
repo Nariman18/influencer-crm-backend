@@ -1,5 +1,5 @@
 // src/lib/mailgun-helpers.ts
-import axios, { AxiosResponse } from "axios"; // ✅ Add AxiosResponse import
+import axios, { AxiosResponse } from "axios";
 import { resolveMx } from "dns/promises";
 import { getPrisma } from "../config/prisma";
 import { InfluencerStatus } from "@prisma/client";
@@ -144,6 +144,163 @@ export async function getBouncedEmails(): Promise<string[]> {
 }
 
 /**
+ * Categorize bounce/error based on SMTP code and message
+ * Returns detailed error category for better handling
+ */
+export function categorizeBounceError(
+  errorMessage: string,
+  code?: number | string | null,
+  severity?: string | null
+): string {
+  const msg = (errorMessage || "").toLowerCase();
+  const codeStr = String(code || "");
+
+  // EXPLICIT 5.1.1 DETECTION (Invalid/Non-existent mailbox)
+  if (
+    codeStr === "511" ||
+    codeStr === "5.1.1" ||
+    msg.includes("5.1.1") ||
+    msg.includes("does not exist") ||
+    msg.includes("user does not exist") ||
+    msg.includes("user unknown") ||
+    msg.includes("no such user") ||
+    msg.includes("invalid mailbox") ||
+    msg.includes("mailbox not found") ||
+    msg.includes("recipient address rejected")
+  ) {
+    return "INVALID_MAILBOX_5.1.1";
+  }
+
+  // 5.1.0 - Address does not exist
+  if (
+    codeStr === "510" ||
+    codeStr === "5.1.0" ||
+    msg.includes("address does not exist") ||
+    msg.includes("unrouteable address")
+  ) {
+    return "ADDRESS_NOT_FOUND_5.1.0";
+  }
+
+  // 5.2.1 - Mailbox disabled/unavailable
+  if (
+    codeStr === "521" ||
+    codeStr === "5.2.1" ||
+    msg.includes("account disabled") ||
+    msg.includes("mailbox unavailable") ||
+    msg.includes("mailbox disabled")
+  ) {
+    return "MAILBOX_DISABLED_5.2.1";
+  }
+
+  // 5.2.2 - Mailbox full
+  if (
+    codeStr === "522" ||
+    codeStr === "5.2.2" ||
+    msg.includes("mailbox full") ||
+    msg.includes("over quota") ||
+    msg.includes("quota exceeded")
+  ) {
+    return "MAILBOX_FULL_5.2.2";
+  }
+
+  // 5.5.0 - Mailbox syntax incorrect
+  if (
+    codeStr === "550" ||
+    codeStr === "5.5.0" ||
+    (msg.includes("invalid") && msg.includes("address")) ||
+    msg.includes("syntax error")
+  ) {
+    return "INVALID_ADDRESS_5.5.0";
+  }
+
+  // 5.7.1 - Policy/spam rejection
+  if (
+    codeStr === "571" ||
+    codeStr === "5.7.1" ||
+    msg.includes("spam") ||
+    msg.includes("blocked") ||
+    msg.includes("policy") ||
+    msg.includes("denied")
+  ) {
+    return "POLICY_REJECTION_5.7.1";
+  }
+
+  // 4.x.x - Temporary failures
+  if (
+    severity === "temporary" ||
+    (codeStr.startsWith("4") && codeStr.length === 3)
+  ) {
+    if (msg.includes("greylisted") || msg.includes("try again later")) {
+      return "TEMPORARY_GREYLISTED_4.x.x";
+    }
+    if (msg.includes("rate limit") || msg.includes("too many")) {
+      return "TEMPORARY_RATE_LIMIT_4.x.x";
+    }
+    return "TEMPORARY_FAILURE_4.x.x";
+  }
+
+  // Generic permanent bounce
+  if (
+    severity === "permanent" ||
+    (codeStr.startsWith("5") && codeStr.length === 3)
+  ) {
+    return "PERMANENT_BOUNCE_5.x.x";
+  }
+
+  // Spam complaint
+  if (msg.includes("complaint") || msg.includes("spam")) {
+    return "SPAM_COMPLAINT";
+  }
+
+  // Unknown/other
+  return "UNKNOWN_ERROR";
+}
+
+// More comprehensive permanent bounce detection
+export function isPermanentBounce(errorMessage: string): boolean {
+  if (!errorMessage || typeof errorMessage !== "string") return false;
+
+  const msg = errorMessage.toLowerCase();
+
+  // COMPREHENSIVE permanent bounce indicators
+  const permanentPatterns = [
+    // User/mailbox doesn't exist (5.1.1)
+    "5.1.1",
+    "does not exist",
+    "user does not exist",
+    "no such user",
+    "user unknown",
+    "invalid mailbox",
+    "mailbox not found",
+    "recipient address rejected",
+    "unrouteable address",
+
+    // Account disabled (5.2.1)
+    "5.2.1",
+    "account disabled",
+    "mailbox unavailable",
+    "mailbox disabled",
+
+    // Address syntax errors (5.5.0)
+    "5.5.0",
+    "550", // Common SMTP rejection code
+
+    // Domain doesn't exist
+    "551", // User not local
+    "553", // Mailbox name not allowed
+    "domain not found",
+    "domain does not exist",
+
+    // Generic 5.x.x indicators
+    "permanent failure",
+    "permanently rejected",
+    "permanent error",
+  ];
+
+  return permanentPatterns.some((pattern) => msg.includes(pattern));
+}
+
+/**
  * Fetch all complained emails from Mailgun
  */
 export async function getComplainedEmails(): Promise<string[]> {
@@ -265,38 +422,6 @@ export async function cleanupBouncedInfluencers(): Promise<{
     );
     throw error;
   }
-}
-
-/**
- * Categorize bounce error message as permanent or temporary
- */
-export function isPermanentBounce(errorMessage: string): boolean {
-  if (!errorMessage || typeof errorMessage !== "string") return false;
-
-  const msg = errorMessage.toLowerCase();
-
-  // Permanent bounce indicators (5.x.x errors)
-  const permanentPatterns = [
-    "does not exist",
-    "user does not exist",
-    "account disabled",
-    "mailbox unavailable",
-    "mailbox not found",
-    "user unknown",
-    "address rejected",
-    "recipient address rejected",
-    "unrouteable address",
-    "no such user",
-    "invalid mailbox",
-    "5.1.1", // User unknown
-    "5.2.1", // Account disabled
-    "5.5.0", // Mailbox unavailable
-    "550", // Mailbox unavailable
-    "551", // User not local
-    "553", // Mailbox name not allowed
-  ];
-
-  return permanentPatterns.some((pattern) => msg.includes(pattern));
 }
 
 /**

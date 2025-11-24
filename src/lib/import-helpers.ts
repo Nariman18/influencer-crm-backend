@@ -344,7 +344,7 @@ export function mappedToCreateMany(
 }
 
 /**
- * normalizeParsedRow - ENHANCED with Instagram handle fallback for name
+ * normalizeParsedRow - With Instagram handle fallback for name
  */
 export function normalizeParsedRow(row: ParsedRow): ParsedRow {
   const normalized: ParsedRow = {

@@ -116,7 +116,7 @@ export const extractCellText = (v: any): string => {
   if (typeof v === "boolean") return v ? "true" : "false";
 
   if (typeof v === "object") {
-    // Handle hyperlink objects - this is what your Excel has!
+    // Handle hyperlink objects - this is what our mainly Excel has.
     if (v.text && typeof v.text === "object") {
       // Deep nested object with richText
       if (v.text.richText && Array.isArray(v.text.richText)) {
@@ -142,7 +142,7 @@ export const extractCellText = (v: any): string => {
       return String(v.hyperlink).trim();
     }
 
-    // Try toString as last resort
+    // Trying toString as last resort
     if (typeof v.toString === "function") {
       const s = v.toString();
       if (s && s !== "[object Object]") {
@@ -317,9 +317,9 @@ export function mappedToCreateMany(
     name: finalName, // Nickname from Excel
     email: row.email || null, // Email from Excel
     instagramHandle: row.instagramHandle || null, // FULL Instagram URL from Excel Link column
-    link: row.link || null, // Also the FULL Instagram URL from Excel Link column
+    link: row.link || null, // The FULL Instagram URL from Excel Link column
     followers: null,
-    country: row.country || null, // ✅ UPDATED: Include country from Excel
+    country: row.country || null, // Importing Countries from Excel that on 1st row in A table section
     notes: row.notes || null, // Include DM notes if any
     status: InfluencerStatus.NOT_SENT,
     managerId,
@@ -338,7 +338,7 @@ export function normalizeParsedRow(row: ParsedRow): ParsedRow {
       : null, // NO @ removal!
     link: row.link ? String(row.link).trim() : null,
     followers: null,
-    country: row.country ? String(row.country).trim() : null, // ✅ UPDATED: Preserve country
+    country: row.country ? String(row.country).trim() : null,
     notes: row.notes ? String(row.notes).trim() : null,
   };
 

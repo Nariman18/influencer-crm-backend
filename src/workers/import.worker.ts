@@ -16,7 +16,7 @@ import {
   looksLikeDM,
   emailLooksValid,
   normalizeUnicodeEmail,
-  extractCountryFromFirstRow, // ✅ NEW IMPORT
+  extractCountryFromFirstRow,
 } from "../lib/import-helpers";
 import crypto from "crypto";
 import { getGcsClient } from "../lib/gcs-client";
@@ -36,7 +36,6 @@ interface ImportJobData {
   timestamp?: number;
 }
 
-// Improved helper functions with better error handling
 async function downloadFromGCS(filePath: string) {
   if (!filePath) {
     throw new Error("File path is required");
@@ -78,29 +77,37 @@ async function isJobCancelled(importJobId: string): Promise<boolean> {
   }
 }
 
-// Enhanced duplicate checking for batch processing - NAME BASED ONLY
+// ✅ IMPROVED: Better duplicate detection using name + Instagram handle
 async function checkBatchDuplicates(
   rows: ParsedRow[],
   managerId: string
 ): Promise<Map<string, ParsedRow>> {
   const duplicateMap = new Map<string, ParsedRow>();
 
-  // Collect all names to check for duplicates
-  const names = rows
-    .map((row) => row.name)
-    .filter(Boolean)
-    .map((name) => name!.toLowerCase().trim());
+  // Collect unique identifiers (name + instagram handle)
+  const identifiers = rows
+    .filter((row) => row.name)
+    .map((row) => ({
+      name: row.name!.toLowerCase().trim(),
+      handle: row.instagramHandle
+        ? String(row.instagramHandle).toLowerCase().trim()
+        : null,
+    }));
 
-  if (names.length === 0) return duplicateMap;
+  if (identifiers.length === 0) return duplicateMap;
 
-  // Check for existing influencers with same names (case-insensitive)
+  // ✅ Check using name AND Instagram handle for better uniqueness
   const existing = await prisma.influencer.findMany({
     where: {
       managerId,
-      name: {
-        in: names,
-        mode: "insensitive",
-      },
+      OR: identifiers.map((id) => ({
+        AND: [
+          { name: { equals: id.name, mode: "insensitive" } },
+          id.handle
+            ? { instagramHandle: { contains: id.handle, mode: "insensitive" } }
+            : {},
+        ],
+      })),
     },
     select: {
       name: true,
@@ -109,25 +116,36 @@ async function checkBatchDuplicates(
     },
   });
 
-  // Create set for quick lookup
-  const existingNames = new Set(
-    existing
-      .map((influencer) => influencer.name?.toLowerCase().trim())
-      .filter(Boolean)
+  // Create lookup set with name+handle combination
+  const existingSet = new Set(
+    existing.map((influencer) => {
+      const name = influencer.name?.toLowerCase().trim() || "";
+      const handle = influencer.instagramHandle?.toLowerCase().trim() || "";
+      return `${name}|${handle}`;
+    })
   );
 
-  // Mark duplicates in the current batch
+  // Mark duplicates
   rows.forEach((row) => {
-    if (row.name && existingNames.has(row.name.toLowerCase().trim())) {
-      const key = row.name.toLowerCase().trim();
-      duplicateMap.set(key, row);
+    if (row.name) {
+      const name = row.name.toLowerCase().trim();
+      const handle = row.instagramHandle
+        ? String(row.instagramHandle).toLowerCase().trim()
+        : "";
+      const key = `${name}|${handle}`;
+
+      if (existingSet.has(key)) {
+        duplicateMap.set(key, row);
+      }
     }
   });
 
+  console.log(
+    `🔍 Duplicate check: ${duplicateMap.size} duplicates found out of ${rows.length} rows`
+  );
   return duplicateMap;
 }
 
-// Safe job update function
 async function safeUpdateJobStatus(importJobId: string, data: any) {
   if (!importJobId) {
     console.error("Cannot update job: importJobId is undefined");
@@ -144,14 +162,10 @@ async function safeUpdateJobStatus(importJobId: string, data: any) {
   }
 }
 
-/**
- * Extract Instagram username from URL for display
- */
 function extractInstagramUsername(link: string | null): string | null {
   if (!link) return null;
 
   try {
-    // Match Instagram URL patterns
     const patterns = [
       /instagram\.com\/([A-Za-z0-9._]+)(?:\/|$)/i,
       /^@?([A-Za-z0-9._]{1,30})$/,
@@ -170,20 +184,15 @@ function extractInstagramUsername(link: string | null): string | null {
   }
 }
 
-/**
- * Process DM markers and add notes
- */
 function processDMNotes(parsedRow: ParsedRow, rawEmail: any): ParsedRow {
   const emailText = rawEmail ? extractCellText(rawEmail).trim() : null;
 
-  // Check if this is a DM contact
   const isDM =
     looksLikeDM(emailText) || (!parsedRow.email && parsedRow.instagramHandle);
 
   if (isDM) {
     const dmNote = "Contact is through DM.";
 
-    // Add DM note to notes field
     if (!parsedRow.notes) {
       parsedRow.notes = dmNote;
     } else if (!parsedRow.notes.includes(dmNote)) {
@@ -194,49 +203,30 @@ function processDMNotes(parsedRow: ParsedRow, rawEmail: any): ParsedRow {
   return parsedRow;
 }
 
-/**
- * Check if a row has any data (not empty)
- */
+// ✅ RELAXED: More permissive empty row detection
 function hasRowData(values: any[]): boolean {
   if (!Array.isArray(values)) return false;
 
-  // Check columns 1, 2, 3 (A, B, C) for meaningful data
+  // Check columns 1, 2, 3 (A, B, C) for ANY meaningful data
   for (let i = 1; i <= 3; i++) {
     const value = values[i];
 
-    // Skip if null, undefined, or empty string
     if (value === null || value === undefined || value === "") {
       continue;
     }
 
-    // Extract and clean text
     const text = extractCellText(value).trim();
 
-    // Skip common placeholder/empty patterns (INCLUDING HEADER VALUES)
-    if (
-      text === "" ||
-      text === "Nickname" ||
-      text === "Link" ||
-      text === "E-mail" ||
-      text === "No Email" ||
-      text.toLowerCase() === "e-mail" ||
-      text.toLowerCase().includes("placeholder") ||
-      text === "-" ||
-      text === "—" ||
-      text === "n/a" ||
-      text === "N/A"
-    ) {
-      continue;
-    }
+    // Only skip truly empty values and obvious headers
+    if (text === "") continue;
+    if (text.toLowerCase() === "nickname") continue;
+    if (text.toLowerCase() === "link") continue;
+    if (text.toLowerCase() === "e-mail") continue;
 
-    // If we found any meaningful text, return true
-    if (text !== "") {
-      console.log(`🔍 Found meaningful data in column ${i}: "${text}"`);
-      return true;
-    }
+    // If we have ANY other text, consider it valid data
+    return true;
   }
 
-  console.log(`🔍 No meaningful data found in row`);
   return false;
 }
 
@@ -249,12 +239,11 @@ function debugRowData(rowNumber: number, values: any[]): void {
   });
 }
 
-// Process large files with optimized settings
+// ✅ OPTIMIZED: Process large files with better performance
 async function processLargeImport(job: Job<ImportJobData>) {
-  const BATCH_SIZE = 1000;
-  const STATUS_INTERVAL = 1000;
+  const BATCH_SIZE = 2000; // ✅ INCREASED from 1000
+  const STATUS_INTERVAL = 2000; // ✅ INCREASED from 1000
 
-  // Validate job data
   if (!job.data) {
     throw new Error("Job data is undefined");
   }
@@ -278,7 +267,6 @@ async function processLargeImport(job: Job<ImportJobData>) {
   let downloadedTemp = false;
 
   try {
-    // Download from GCS if needed
     if (typeof rawFilePath === "string" && rawFilePath.startsWith("gs://")) {
       const result = await downloadFromGCS(rawFilePath);
       localFilePath = result.localPath;
@@ -287,7 +275,6 @@ async function processLargeImport(job: Job<ImportJobData>) {
       localFilePath = rawFilePath;
     }
 
-    // Update job status
     await safeUpdateJobStatus(importJobId, { status: "PROCESSING" });
 
     let processed = 0;
@@ -296,7 +283,6 @@ async function processLargeImport(job: Job<ImportJobData>) {
     const errors: any[] = [];
     const duplicates: any[] = [];
 
-    // ✅ NEW: Variable to store country from Row 1
     let batchCountry: string | null = null;
 
     const emitProgress = async () => {
@@ -311,7 +297,6 @@ async function processLargeImport(job: Job<ImportJobData>) {
       }).catch(() => {});
     };
 
-    // Use streaming reader for memory efficiency
     const workbookReader = new (ExcelJS as any).stream.xlsx.WorkbookReader(
       localFilePath,
       {
@@ -329,22 +314,28 @@ async function processLargeImport(job: Job<ImportJobData>) {
       if (buffer.length === 0) return;
 
       try {
-        // Check for duplicates in current batch (NAME BASED ONLY)
         const duplicateMap = await checkBatchDuplicates(buffer, managerId);
         const uniqueRows = buffer.filter((row) => {
-          const key = row.name ? row.name.toLowerCase().trim() : "unknown";
+          const name = row.name ? row.name.toLowerCase().trim() : "";
+          const handle = row.instagramHandle
+            ? String(row.instagramHandle).toLowerCase().trim()
+            : "";
+          const key = `${name}|${handle}`;
           return !duplicateMap.has(key);
         });
 
-        // Add duplicates to tracking
         buffer.forEach((row) => {
-          const key = row.name ? row.name.toLowerCase().trim() : "unknown";
+          const name = row.name ? row.name.toLowerCase().trim() : "";
+          const handle = row.instagramHandle
+            ? String(row.instagramHandle).toLowerCase().trim()
+            : "";
+          const key = `${name}|${handle}`;
           if (duplicateMap.has(key)) {
             duplicates.push({
               name: row.name,
               instagramHandle: row.instagramHandle,
               email: row.email,
-              error: "Duplicate influencer (same name)",
+              error: "Duplicate influencer",
             });
           }
         });
@@ -353,33 +344,22 @@ async function processLargeImport(job: Job<ImportJobData>) {
           try {
             const result = await prisma.influencer.createMany({
               data: uniqueRows.map((row) => mappedToCreateMany(row, managerId)),
-              skipDuplicates: false, // We already did duplicate checking
+              skipDuplicates: true,
             });
             success += result.count;
             console.log(
-              `✅ Batch insert successful: ${result.count} influencers created`
+              `✅ Batch inserted: ${result.count}/${uniqueRows.length} influencers`
             );
           } catch (error) {
             console.error("❌ Batch insert failed:", error);
-            // If batch insert fails, try individual inserts
-            for (const row of uniqueRows) {
-              try {
-                await prisma.influencer.create({
-                  data: mappedToCreateMany(row, managerId),
-                });
-                success++;
-              } catch (individualError) {
-                failed++;
-                errors.push({
-                  row: `individual_${processed}`,
-                  error:
-                    individualError instanceof Error
-                      ? individualError.message
-                      : "Individual insert failed",
-                  data: row,
-                });
-              }
-            }
+            failed += uniqueRows.length;
+            errors.push({
+              batch: `rows_${processed - buffer.length + 1}_to_${processed}`,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Batch processing failed",
+            });
           }
         }
 
@@ -404,11 +384,9 @@ async function processLargeImport(job: Job<ImportJobData>) {
         const values = (row.values || []) as any[];
         if (!Array.isArray(values)) continue;
 
-        // ✅ NEW: Check first row for country
         if (isFirstRow) {
           isFirstRow = false;
 
-          // Try to extract country from Row 1, Column A
           const detectedCountry = extractCountryFromFirstRow(values);
           if (detectedCountry) {
             batchCountry = detectedCountry;
@@ -417,10 +395,9 @@ async function processLargeImport(job: Job<ImportJobData>) {
             );
           }
 
-          continue; // Skip row 1 (either header or country)
+          continue;
         }
 
-        // Skip empty rows
         if (!hasRowData(values)) {
           continue;
         }
@@ -428,7 +405,6 @@ async function processLargeImport(job: Job<ImportJobData>) {
         processed++;
 
         try {
-          // DIRECT MANUAL MAPPING for large files
           const rawNickname = values[1] ?? null;
           const rawLink = values[2] ?? null;
           const rawEmail = values[3] ?? null;
@@ -444,35 +420,20 @@ async function processLargeImport(job: Job<ImportJobData>) {
             email = normalizeUnicodeEmail(emailCandidate).toLowerCase();
           }
 
-          const instagramUsername = link
-            ? extractInstagramUsername(link)
-            : null;
-
           const parsedRow: ParsedRow = {
             name,
             email,
             instagramHandle: link,
             link,
             followers: null,
-            country: batchCountry, // ✅ NEW: Apply country from Row 1
+            country: batchCountry,
             notes: null,
           };
 
-          // Process DM markers and add notes
           const rowWithDMNotes = processDMNotes(parsedRow, rawEmail);
 
           const normalized = normalizeParsedRow(rowWithDMNotes);
 
-          console.log(`✅ Processed row ${processed}:`, {
-            name: normalized.name,
-            email: normalized.email,
-            instagramHandle: normalized.instagramHandle,
-            instagramUsername,
-            country: normalized.country, // ✅ NEW: Log country
-            notes: normalized.notes,
-          });
-
-          // VALIDATION: Only require name
           if (!normalized.name || normalized.name.trim() === "") {
             failed++;
             errors.push({
@@ -485,16 +446,13 @@ async function processLargeImport(job: Job<ImportJobData>) {
 
           buffer.push(normalized);
 
-          // Flush when batch size reached
           if (buffer.length >= BATCH_SIZE) {
             await flushBuffer();
           }
 
-          // Emit progress periodically
           if (processed % STATUS_INTERVAL === 0) {
             await emitProgress();
 
-            // Check for cancellation
             if (await isJobCancelled(importJobId)) {
               throw new Error("Import cancelled by user");
             }
@@ -508,18 +466,15 @@ async function processLargeImport(job: Job<ImportJobData>) {
           });
         }
       }
-      break; // Only process first worksheet
+      break;
     }
 
-    // Flush remaining buffer
     if (buffer.length > 0) {
       await flushBuffer();
     }
 
-    // Final progress update
     await emitProgress();
 
-    // Update job completion
     const finalStatus =
       failed === 0 && duplicates.length === 0
         ? "COMPLETED"
@@ -535,7 +490,6 @@ async function processLargeImport(job: Job<ImportJobData>) {
       completedAt: new Date(),
     });
 
-    // Final completion emit
     await publishImportProgress(importJobId, {
       managerId,
       jobId: importJobId,
@@ -546,7 +500,6 @@ async function processLargeImport(job: Job<ImportJobData>) {
       done: true,
     });
 
-    // ✅ NEW: Log country summary
     if (batchCountry) {
       console.log(`📊 Import completed with country: ${batchCountry}`);
     }
@@ -565,7 +518,6 @@ async function processLargeImport(job: Job<ImportJobData>) {
   } catch (error) {
     console.error("Large import processing failed:", error);
 
-    // Update job as failed
     await safeUpdateJobStatus(importJobId, {
       status: "FAILED",
       errors: [
@@ -576,7 +528,6 @@ async function processLargeImport(job: Job<ImportJobData>) {
 
     throw error;
   } finally {
-    // Cleanup temporary file
     if (downloadedTemp && localFilePath) {
       try {
         await fs.promises.unlink(localFilePath);
@@ -587,12 +538,10 @@ async function processLargeImport(job: Job<ImportJobData>) {
   }
 }
 
-// Standard import process for smaller files - DIRECT MANUAL MAPPING
+// Standard import for smaller files
 async function processStandardImport(job: Job<ImportJobData>) {
-  // Use smaller batch size for standard imports
-  const BATCH_SIZE = 100;
+  const BATCH_SIZE = 1000;
 
-  // Validate job data
   if (!job.data) {
     throw new Error("Job data is undefined");
   }
@@ -611,7 +560,6 @@ async function processStandardImport(job: Job<ImportJobData>) {
   let downloadedTemp = false;
 
   try {
-    // Download from GCS if needed
     if (typeof rawFilePath === "string" && rawFilePath.startsWith("gs://")) {
       const result = await downloadFromGCS(rawFilePath);
       localFilePath = result.localPath;
@@ -620,7 +568,6 @@ async function processStandardImport(job: Job<ImportJobData>) {
       localFilePath = rawFilePath;
     }
 
-    // Update job status
     await safeUpdateJobStatus(importJobId, { status: "PROCESSING" });
 
     const workbook = new ExcelJS.Workbook();
@@ -629,7 +576,6 @@ async function processStandardImport(job: Job<ImportJobData>) {
     const worksheet = workbook.worksheets[0];
     const rows: any[] = [];
 
-    // ✅ NEW: Variable to store country from Row 1
     let batchCountry: string | null = null;
 
     console.log("🔍 DEBUG: Reading Excel file structure");
@@ -637,7 +583,7 @@ async function processStandardImport(job: Job<ImportJobData>) {
     console.log("Total rows:", worksheet.rowCount);
     console.log("Total columns:", worksheet.columnCount);
 
-    // ✅ NEW: Check Row 1 for country BEFORE processing data rows
+    // Check Row 1 for country
     let firstRowValues: any[] | null = null;
     worksheet.getRow(1).eachCell({ includeEmpty: true }, (cell, colNumber) => {
       if (!firstRowValues) firstRowValues = [];
@@ -652,12 +598,10 @@ async function processStandardImport(job: Job<ImportJobData>) {
       }
     }
 
-    // Get rows excluding empty ones and header
     worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
       debugRowData(rowNumber, row.values as any[]);
 
       if (rowNumber > 1) {
-        // Skip row 1 (header or country)
         if (hasRowData(row.values as any[])) {
           rows.push(row.values);
           console.log(`✅ Including row ${rowNumber} in processing`);
@@ -682,7 +626,6 @@ async function processStandardImport(job: Job<ImportJobData>) {
 
     const validRows: ParsedRow[] = [];
 
-    // Process each row with DIRECT MANUAL MAPPING
     for (let i = 0; i < rows.length; i++) {
       const rowValues = rows[i];
 
@@ -710,23 +653,19 @@ async function processStandardImport(job: Job<ImportJobData>) {
           email = normalizeUnicodeEmail(emailCandidate).toLowerCase();
         }
 
-        const instagramUsername = link ? extractInstagramUsername(link) : null;
-
         const parsedRow: ParsedRow = {
           name,
           email,
           instagramHandle: link,
           link,
           followers: null,
-          country: batchCountry, // ✅ NEW: Apply country from Row 1
+          country: batchCountry,
           notes: null,
         };
 
-        // Process DM markers and add notes
         const rowWithDMNotes = processDMNotes(parsedRow, rawEmail);
 
         console.log(`✅ Parsed row ${i}:`, rowWithDMNotes);
-        console.log(`📱 Extracted Instagram username:`, instagramUsername);
 
         const normalized = normalizeParsedRow(rowWithDMNotes);
 
@@ -735,12 +674,10 @@ async function processStandardImport(job: Job<ImportJobData>) {
           finalEmail: normalized.email,
           finalHandle: normalized.instagramHandle,
           finalLink: normalized.link,
-          finalCountry: normalized.country, // ✅ NEW: Log country
+          finalCountry: normalized.country,
           finalNotes: normalized.notes,
-          instagramUsername,
         });
 
-        // VALIDATION: Only require name
         if (!normalized.name || normalized.name.trim() === "") {
           console.log(`❌ Row ${i} failed: Missing name`);
           failed++;
@@ -764,33 +701,38 @@ async function processStandardImport(job: Job<ImportJobData>) {
       }
     }
 
-    // Check for duplicates (NAME BASED ONLY)
     if (validRows.length > 0) {
       const duplicateMap = await checkBatchDuplicates(validRows, managerId);
       const uniqueRows = validRows.filter((row) => {
-        const key = row.name ? row.name.toLowerCase().trim() : "unknown";
+        const name = row.name ? row.name.toLowerCase().trim() : "";
+        const handle = row.instagramHandle
+          ? String(row.instagramHandle).toLowerCase().trim()
+          : "";
+        const key = `${name}|${handle}`;
         return !duplicateMap.has(key);
       });
 
-      // Add duplicates to tracking
       validRows.forEach((row) => {
-        const key = row.name ? row.name.toLowerCase().trim() : "unknown";
+        const name = row.name ? row.name.toLowerCase().trim() : "";
+        const handle = row.instagramHandle
+          ? String(row.instagramHandle).toLowerCase().trim()
+          : "";
+        const key = `${name}|${handle}`;
         if (duplicateMap.has(key)) {
           duplicates.push({
             name: row.name,
             instagramHandle: row.instagramHandle,
             email: row.email,
-            error: "Duplicate influencer (same name)",
+            error: "Duplicate influencer",
           });
         }
       });
 
-      // Insert unique rows
       if (uniqueRows.length > 0) {
         try {
           const result = await prisma.influencer.createMany({
             data: uniqueRows.map((row) => mappedToCreateMany(row, managerId)),
-            skipDuplicates: false,
+            skipDuplicates: true,
           });
           success += result.count;
           console.log(
@@ -798,32 +740,20 @@ async function processStandardImport(job: Job<ImportJobData>) {
           );
         } catch (error) {
           console.error("❌ Batch insert failed:", error);
-          // If batch insert fails, try individual inserts
-          for (const row of uniqueRows) {
-            try {
-              await prisma.influencer.create({
-                data: mappedToCreateMany(row, managerId),
-              });
-              success++;
-            } catch (individualError) {
-              failed++;
-              errors.push({
-                row: "individual_insert",
-                error:
-                  individualError instanceof Error
-                    ? individualError.message
-                    : "Individual insert failed",
-                data: row,
-              });
-            }
-          }
+          failed += uniqueRows.length;
+          errors.push({
+            batch: "batch_insert",
+            error:
+              error instanceof Error
+                ? error.message
+                : "Batch processing failed",
+          });
         }
       }
 
       failed += validRows.length - uniqueRows.length;
     }
 
-    // Emit progress
     await publishImportProgress(importJobId, {
       managerId,
       jobId: importJobId,
@@ -834,12 +764,10 @@ async function processStandardImport(job: Job<ImportJobData>) {
       estimatedTotal: rows.length,
     });
 
-    // Check for cancellation
     if (await isJobCancelled(importJobId)) {
       throw new Error("Import cancelled by user");
     }
 
-    // Update job completion
     const finalStatus =
       failed === 0 && duplicates.length === 0
         ? "COMPLETED"
@@ -855,7 +783,6 @@ async function processStandardImport(job: Job<ImportJobData>) {
       completedAt: new Date(),
     });
 
-    // ✅ NEW: Log country summary
     if (batchCountry) {
       console.log(`📊 Standard import completed with country: ${batchCountry}`);
     }
@@ -884,7 +811,6 @@ async function processStandardImport(job: Job<ImportJobData>) {
 
     throw error;
   } finally {
-    // Cleanup temporary file
     if (downloadedTemp && localFilePath) {
       try {
         await fs.promises.unlink(localFilePath);
@@ -901,7 +827,6 @@ export const startOptimizedImportWorker = () => {
     async (job: Job<ImportJobData>) => {
       console.log(`🚀 Processing import job: ${job.id}, name: ${job.name}`);
 
-      // Enhanced job filtering
       const isSchedulerJob =
         job.name === "__scheduler-noop" ||
         job.data?.__noop === true ||
@@ -916,14 +841,12 @@ export const startOptimizedImportWorker = () => {
         return { skipped: true, reason: "scheduler_job" };
       }
 
-      // Validate this is a real import job
       if (!job.data || typeof job.data !== "object") {
         throw new Error("Invalid job data - cannot process import");
       }
 
       const { importJobId, managerId, filePath } = job.data;
 
-      // Check for required fields for real import jobs
       if (!importJobId || !managerId || !filePath) {
         console.warn(
           `[optimized-import.worker] missing required fields, skipping job`,
@@ -951,12 +874,11 @@ export const startOptimizedImportWorker = () => {
     },
     {
       connection,
-      concurrency: Number(process.env.IMPORT_WORKER_CONCURRENCY || 1),
+      concurrency: Number(process.env.IMPORT_WORKER_CONCURRENCY || 2),
     }
   );
 
   worker.on("failed", (job, err) => {
-    // ⚠️ CRITICAL FIX: Skip scheduler jobs in error handling too
     if (job?.name === "__scheduler-noop" || job?.data?.__noop === true) {
       console.log(
         `[optimized-import.worker] scheduler job failed (ignored)`,
@@ -967,7 +889,6 @@ export const startOptimizedImportWorker = () => {
 
     console.error("[optimized-import.worker] job failed", job?.id, err);
 
-    // Only update if we have a valid importJobId
     if (job?.data?.importJobId) {
       safeUpdateJobStatus(job.data.importJobId, {
         status: "FAILED",
@@ -984,7 +905,6 @@ export const startOptimizedImportWorker = () => {
   });
 
   worker.on("completed", (job, result) => {
-    // ⚠️ CRITICAL FIX: Skip scheduler jobs in completion handling
     if (job?.name === "__scheduler-noop" || job?.data?.__noop === true) {
       return;
     }
@@ -993,7 +913,7 @@ export const startOptimizedImportWorker = () => {
       processed: result.processed,
       success: result.success,
       failed: result.failed,
-      duplicates: result.duplicates.length,
+      duplicates: result.duplicates?.length || 0,
     });
   });
 

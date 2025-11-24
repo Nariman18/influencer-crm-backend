@@ -8,8 +8,6 @@ import emailTemplateRoutes from "./emailTemplate.routes";
 import emailRoutes from "./email.routes";
 import dashboardRoutes from "./dashboard.routes";
 import queueRoutes from "./queue.routes";
-
-import debugQueue from "./debug-queue";
 import importRoutes from "./import.routes";
 import exportRoutes from "./export.routes";
 
@@ -23,8 +21,6 @@ router.use("/email-templates", emailTemplateRoutes);
 router.use("/emails", emailRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/queue", queueRoutes);
-
-router.use("/debug", debugQueue);
 
 // Import routes
 router.use("/import", importRoutes);

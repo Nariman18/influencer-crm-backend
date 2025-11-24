@@ -77,72 +77,70 @@ async function isJobCancelled(importJobId: string): Promise<boolean> {
   }
 }
 
-// ✅ IMPROVED: Better duplicate detection using name + Instagram handle
+// Simplified duplicate detection that actually works
 async function checkBatchDuplicates(
   rows: ParsedRow[],
   managerId: string
 ): Promise<Map<string, ParsedRow>> {
   const duplicateMap = new Map<string, ParsedRow>();
 
-  // Collect unique identifiers (name + instagram handle)
-  const identifiers = rows
+  if (rows.length === 0) return duplicateMap;
+
+  // Collect all names for checking
+  const names = rows
     .filter((row) => row.name)
-    .map((row) => ({
-      name: row.name!.toLowerCase().trim(),
-      handle: row.instagramHandle
-        ? String(row.instagramHandle).toLowerCase().trim()
-        : null,
-    }));
+    .map((row) => row.name!.toLowerCase().trim());
 
-  if (identifiers.length === 0) return duplicateMap;
+  if (names.length === 0) return duplicateMap;
 
-  // ✅ Check using name AND Instagram handle for better uniqueness
-  const existing = await prisma.influencer.findMany({
-    where: {
-      managerId,
-      OR: identifiers.map((id) => ({
-        AND: [
-          { name: { equals: id.name, mode: "insensitive" } },
-          id.handle
-            ? { instagramHandle: { contains: id.handle, mode: "insensitive" } }
-            : {},
-        ],
-      })),
-    },
-    select: {
-      name: true,
-      instagramHandle: true,
-      email: true,
-    },
-  });
+  try {
+    // Just check by name (most influencers have unique names)
+    const existing = await prisma.influencer.findMany({
+      where: {
+        managerId,
+        name: {
+          in: names,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        name: true,
+        instagramHandle: true,
+      },
+    });
 
-  // Create lookup set with name+handle combination
-  const existingSet = new Set(
-    existing.map((influencer) => {
-      const name = influencer.name?.toLowerCase().trim() || "";
-      const handle = influencer.instagramHandle?.toLowerCase().trim() || "";
-      return `${name}|${handle}`;
-    })
-  );
+    // Create lookup map: name|handle -> true
+    const existingMap = new Map<string, boolean>();
+    existing.forEach((inf) => {
+      const name = (inf.name || "").toLowerCase().trim();
+      const handle = (inf.instagramHandle || "").toLowerCase().trim();
+      const key = `${name}|${handle}`;
+      existingMap.set(key, true);
+    });
 
-  // Mark duplicates
-  rows.forEach((row) => {
-    if (row.name) {
+    // Check each row against existing
+    rows.forEach((row) => {
+      if (!row.name) return;
+
       const name = row.name.toLowerCase().trim();
       const handle = row.instagramHandle
         ? String(row.instagramHandle).toLowerCase().trim()
         : "";
       const key = `${name}|${handle}`;
 
-      if (existingSet.has(key)) {
+      if (existingMap.has(key)) {
         duplicateMap.set(key, row);
       }
-    }
-  });
+    });
 
-  console.log(
-    `🔍 Duplicate check: ${duplicateMap.size} duplicates found out of ${rows.length} rows`
-  );
+    console.log(
+      `🔍 Duplicate check: ${duplicateMap.size} duplicates found out of ${rows.length} rows`
+    );
+  } catch (error) {
+    console.error("❌ Duplicate check failed:", error);
+    // On error, continue without duplicate checking
+  }
+
   return duplicateMap;
 }
 
@@ -159,28 +157,6 @@ async function safeUpdateJobStatus(importJobId: string, data: any) {
     });
   } catch (error) {
     console.error(`Failed to update job ${importJobId}:`, error);
-  }
-}
-
-function extractInstagramUsername(link: string | null): string | null {
-  if (!link) return null;
-
-  try {
-    const patterns = [
-      /instagram\.com\/([A-Za-z0-9._]+)(?:\/|$)/i,
-      /^@?([A-Za-z0-9._]{1,30})$/,
-    ];
-
-    for (const pattern of patterns) {
-      const match = link.match(pattern);
-      if (match && match[1]) {
-        return match[1].replace(/^@/, "").trim();
-      }
-    }
-
-    return null;
-  } catch {
-    return null;
   }
 }
 
@@ -203,7 +179,7 @@ function processDMNotes(parsedRow: ParsedRow, rawEmail: any): ParsedRow {
   return parsedRow;
 }
 
-// ✅ RELAXED: More permissive empty row detection
+// More permissive empty row detection
 function hasRowData(values: any[]): boolean {
   if (!Array.isArray(values)) return false;
 
@@ -239,10 +215,10 @@ function debugRowData(rowNumber: number, values: any[]): void {
   });
 }
 
-// ✅ OPTIMIZED: Process large files with better performance
+// Process large files with better performance
 async function processLargeImport(job: Job<ImportJobData>) {
-  const BATCH_SIZE = 2000; // ✅ INCREASED from 1000
-  const STATUS_INTERVAL = 2000; // ✅ INCREASED from 1000
+  const BATCH_SIZE = 2000;
+  const STATUS_INTERVAL = 2000;
 
   if (!job.data) {
     throw new Error("Job data is undefined");
@@ -352,14 +328,17 @@ async function processLargeImport(job: Job<ImportJobData>) {
             );
           } catch (error) {
             console.error("❌ Batch insert failed:", error);
-            failed += uniqueRows.length;
-            errors.push({
-              batch: `rows_${processed - buffer.length + 1}_to_${processed}`,
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "Batch processing failed",
-            });
+            // Try individual inserts as fallback
+            for (const row of uniqueRows) {
+              try {
+                await prisma.influencer.create({
+                  data: mappedToCreateMany(row, managerId),
+                });
+                success++;
+              } catch (e) {
+                failed++;
+              }
+            }
           }
         }
 
@@ -579,9 +558,6 @@ async function processStandardImport(job: Job<ImportJobData>) {
     let batchCountry: string | null = null;
 
     console.log("🔍 DEBUG: Reading Excel file structure");
-    console.log("Worksheet name:", worksheet.name);
-    console.log("Total rows:", worksheet.rowCount);
-    console.log("Total columns:", worksheet.columnCount);
 
     // Check Row 1 for country
     let firstRowValues: any[] | null = null;
@@ -599,24 +575,14 @@ async function processStandardImport(job: Job<ImportJobData>) {
     }
 
     worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
-      debugRowData(rowNumber, row.values as any[]);
-
       if (rowNumber > 1) {
         if (hasRowData(row.values as any[])) {
           rows.push(row.values);
-          console.log(`✅ Including row ${rowNumber} in processing`);
-        } else {
-          console.log(`❌ Skipping empty row ${rowNumber}`);
         }
-      } else {
-        console.log(`📋 Skipping row 1 (header/country)`);
       }
     });
 
     console.log(`📊 Processing ${rows.length} data rows from Excel file`);
-    if (batchCountry) {
-      console.log(`🌍 Applying country "${batchCountry}" to all influencers`);
-    }
 
     let processed = 0;
     let success = 0;
@@ -629,18 +595,10 @@ async function processStandardImport(job: Job<ImportJobData>) {
     for (let i = 0; i < rows.length; i++) {
       const rowValues = rows[i];
 
-      console.log(`🔍 Processing row ${i} with values:`, rowValues);
-
       try {
         const rawNickname = rowValues[1] ?? null;
         const rawLink = rowValues[2] ?? null;
         const rawEmail = rowValues[3] ?? null;
-
-        console.log(`🔍 Row ${i} raw values:`, {
-          rawNickname,
-          rawLink,
-          rawEmail,
-        });
 
         const name = rawNickname ? extractCellText(rawNickname).trim() : null;
         const link = rawLink ? extractCellText(rawLink).trim() : null;
@@ -664,22 +622,9 @@ async function processStandardImport(job: Job<ImportJobData>) {
         };
 
         const rowWithDMNotes = processDMNotes(parsedRow, rawEmail);
-
-        console.log(`✅ Parsed row ${i}:`, rowWithDMNotes);
-
         const normalized = normalizeParsedRow(rowWithDMNotes);
 
-        console.log(`✅ Normalized row ${i}:`, {
-          finalName: normalized.name,
-          finalEmail: normalized.email,
-          finalHandle: normalized.instagramHandle,
-          finalLink: normalized.link,
-          finalCountry: normalized.country,
-          finalNotes: normalized.notes,
-        });
-
         if (!normalized.name || normalized.name.trim() === "") {
-          console.log(`❌ Row ${i} failed: Missing name`);
           failed++;
           errors.push({
             row: i,
@@ -692,7 +637,6 @@ async function processStandardImport(job: Job<ImportJobData>) {
         validRows.push(normalized);
         processed++;
       } catch (error) {
-        console.log(`❌ Row ${i} parsing error:`, error);
         failed++;
         errors.push({
           row: i,
@@ -740,14 +684,17 @@ async function processStandardImport(job: Job<ImportJobData>) {
           );
         } catch (error) {
           console.error("❌ Batch insert failed:", error);
-          failed += uniqueRows.length;
-          errors.push({
-            batch: "batch_insert",
-            error:
-              error instanceof Error
-                ? error.message
-                : "Batch processing failed",
-          });
+          // Try individual inserts
+          for (const row of uniqueRows) {
+            try {
+              await prisma.influencer.create({
+                data: mappedToCreateMany(row, managerId),
+              });
+              success++;
+            } catch (e) {
+              failed++;
+            }
+          }
         }
       }
 
@@ -782,10 +729,6 @@ async function processStandardImport(job: Job<ImportJobData>) {
       errors: errors.length > 0 ? (errors as any) : undefined,
       completedAt: new Date(),
     });
-
-    if (batchCountry) {
-      console.log(`📊 Standard import completed with country: ${batchCountry}`);
-    }
 
     console.log(
       `📊 Standard import completed: ${success} success, ${failed} failed, ${duplicates.length} duplicates`
@@ -834,10 +777,7 @@ export const startOptimizedImportWorker = () => {
         job.id?.includes("scheduler");
 
       if (isSchedulerJob) {
-        console.log(`[optimized-import.worker] skipping scheduler job`, {
-          jobId: job.id,
-          jobName: job.name,
-        });
+        console.log(`[optimized-import.worker] skipping scheduler job`);
         return { skipped: true, reason: "scheduler_job" };
       }
 
@@ -848,21 +788,11 @@ export const startOptimizedImportWorker = () => {
       const { importJobId, managerId, filePath } = job.data;
 
       if (!importJobId || !managerId || !filePath) {
-        console.warn(
-          `[optimized-import.worker] missing required fields, skipping job`,
-          {
-            jobId: job.id,
-            importJobId,
-            managerId,
-            filePath,
-          }
-        );
+        console.warn(`[optimized-import.worker] missing required fields`);
         return { skipped: true, reason: "missing_required_fields" };
       }
 
-      console.log(
-        `Starting import job: ${importJobId}, manager: ${managerId}, file: ${filePath}`
-      );
+      console.log(`Starting import: ${importJobId}`);
 
       const { isLargeFile, estimatedRows } = job.data;
 
@@ -874,16 +804,12 @@ export const startOptimizedImportWorker = () => {
     },
     {
       connection,
-      concurrency: Number(process.env.IMPORT_WORKER_CONCURRENCY || 2),
+      concurrency: Number(process.env.IMPORT_WORKER_CONCURRENCY || 1),
     }
   );
 
   worker.on("failed", (job, err) => {
     if (job?.name === "__scheduler-noop" || job?.data?.__noop === true) {
-      console.log(
-        `[optimized-import.worker] scheduler job failed (ignored)`,
-        job?.id
-      );
       return;
     }
 
@@ -897,10 +823,6 @@ export const startOptimizedImportWorker = () => {
         ] as any,
         completedAt: new Date(),
       }).catch(console.error);
-    } else {
-      console.warn(
-        "[optimized-import.worker] Cannot update job status: importJobId is undefined"
-      );
     }
   });
 
@@ -909,18 +831,13 @@ export const startOptimizedImportWorker = () => {
       return;
     }
 
-    console.log(`[optimized-import.worker] job ${job.id} completed:`, {
-      processed: result.processed,
-      success: result.success,
-      failed: result.failed,
-      duplicates: result.duplicates?.length || 0,
-    });
+    console.log(`[optimized-import.worker] job ${job.id} completed:`, result);
   });
 
   worker.on("error", (err) => {
     console.error("[optimized-import.worker] worker error:", err);
   });
 
-  console.log("[optimized-import.worker] started with optimized file support");
+  console.log("[optimized-import.worker] started successfully");
   return worker;
 };

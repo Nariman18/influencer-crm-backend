@@ -35,7 +35,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
     const delivery =
       payload?.["delivery-status"] || payload?.delivery_status || null;
 
-    // ✅ ENHANCED: Extract comprehensive error information
+    // Extract comprehensive error information
     const errorMessage =
       delivery?.message ||
       delivery?.description ||
@@ -57,7 +57,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
       errorPreview: errorMessage.substring(0, 100),
     });
 
-    // ✅ CRITICAL: Enhanced permanent bounce detection
+    // Enhanced permanent bounce detection
     const isPermanent =
       severity === "permanent" ||
       delivery?.["bounce-type"] === "hard" ||
@@ -67,13 +67,13 @@ router.post("/mailgun", express.json(), async (req, res) => {
       (typeof code === "string" && /^5\d{2}$/.test(code)) ||
       // Text-based detection
       isPermanentBounce(errorMessage) ||
-      // ✅ EXPLICIT 5.1.1 detection (user does not exist)
+      // 5.1.1 detection (user does not exist)
       errorMessage.includes("5.1.1") ||
       errorMessage.toLowerCase().includes("does not exist") ||
       errorMessage.toLowerCase().includes("user unknown") ||
       errorMessage.toLowerCase().includes("no such user");
 
-    // ✅ Get detailed error category
+    // Get detailed error category
     const errorCategory = categorizeBounceError(errorMessage, code, severity);
 
     console.log("[webhook] Error analysis:", {
@@ -139,7 +139,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
       );
     }
 
-    // ✅ CRITICAL: Handle permanent bounces (including 5.1.1)
+    // Handle permanent bounces (including 5.1.1)
     if (isPermanent && recipient) {
       console.warn(`[webhook] ⚠️ PERMANENT BOUNCE detected for ${recipient}:`, {
         code,
@@ -174,7 +174,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
             recipient
           );
 
-          // ✅ Mark influencer(s) as REJECTED
+          // Mark influencer(s) as REJECTED
           const updateResult = await prisma.influencer.updateMany({
             where: { id: { in: influencerIds } },
             data: {
@@ -193,7 +193,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
             recipient
           );
 
-          // ✅ Mark ALL pending/queued emails for these influencers as FAILED
+          // Mark ALL pending/queued emails for these influencers as FAILED
           const emailUpdateResult = await prisma.email.updateMany({
             where: {
               influencerId: { in: influencerIds },
@@ -218,7 +218,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
             `[webhook] ✓ Cancelled ${emailUpdateResult.count} pending email(s) for bounced recipient`
           );
 
-          // ✅ Also update the specific email that bounced
+          // Also update the specific email that bounced
           if (crmEmailId) {
             try {
               await prisma.email.update({
@@ -258,7 +258,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
       }
     }
 
-    // ✅ Handle temporary failures (log but don't reject influencer)
+    // Handle temporary failures (log but don't reject influencer)
     if (
       (event === "failed" || event === "bounced") &&
       !isPermanent &&
@@ -294,7 +294,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
       }
     }
 
-    // ✅ Handle spam complaints
+    // Handle spam complaints
     if (event === "complained") {
       console.warn(`[webhook] ⚠️ SPAM COMPLAINT from ${recipient}`);
 

@@ -81,7 +81,7 @@ model Influencer {
   followers       Int?
   link            String?
   country         String?
-  status          InfluencerStatus  @default(PING_1)
+  status          InfluencerStatus  @default(NOT_SENT)
   notes           String?
   lastContactDate DateTime?
   createdAt       DateTime          @default(now())
@@ -104,7 +104,7 @@ model ImportJob {
   filename    String
   filePath    String?
   fileUrl     String?  
-  status      String   @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED | CANCELLED
+  status      String   @default("PENDING") 
   totalRows   Int?
   successCount Int?
   failedCount  Int?
@@ -125,7 +125,7 @@ model ExportJob {
   managerId  String
   filters    Json?    // optional filters used for export
   filePath   String?  // local path or S3 key
-  status     String   @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED
+  status     String   @default("PENDING") 
   totalRows  Int?
   error      String?
   createdAt  DateTime @default(now())
@@ -230,7 +230,7 @@ model Email {
   sentById         String
   subject          String
   body             String
-  status           EmailStatus
+  status EmailStatus              @default(PENDING)
   sentAt           DateTime?
   openedAt         DateTime?
   repliedAt        DateTime?

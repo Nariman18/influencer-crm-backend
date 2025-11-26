@@ -12,7 +12,6 @@ function parseMaybeEscapedJson(raw?: string) {
   try {
     return JSON.parse(raw);
   } catch (e) {
-    // Try replacing escaped newlines then parse
     try {
       const cleaned = raw.replace(/\\n/g, "\n");
       return JSON.parse(cleaned);

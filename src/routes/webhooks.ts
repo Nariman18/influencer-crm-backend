@@ -1,4 +1,4 @@
-// routes/webhooks.ts - ENHANCED VERSION
+// routes/webhooks.ts
 import express from "express";
 import { getPrisma } from "../config/prisma";
 import {
@@ -71,7 +71,17 @@ router.post("/mailgun", express.json(), async (req, res) => {
       errorMessage.includes("5.1.1") ||
       errorMessage.toLowerCase().includes("does not exist") ||
       errorMessage.toLowerCase().includes("user unknown") ||
-      errorMessage.toLowerCase().includes("no such user");
+      errorMessage.toLowerCase().includes("no such user") ||
+      // 4.2.2 detection (mailbox full) - treat as permanent
+      (typeof code === "number" && code === 452) ||
+      (typeof code === "string" && code === "452") ||
+      errorMessage.includes("4.2.2") ||
+      errorMessage.toLowerCase().includes("out of storage") ||
+      errorMessage.toLowerCase().includes("over quota") ||
+      // 605 detection (suppress-bounce)
+      (typeof code === "number" && code === 605) ||
+      (typeof code === "string" && code === "605") ||
+      payload?.reason === "suppress-bounce";
 
     // Get detailed error category
     const errorCategory = categorizeBounceError(errorMessage, code, severity);
@@ -134,12 +144,12 @@ router.post("/mailgun", express.json(), async (req, res) => {
       }
     } else {
       console.warn(
-        "[webhook] No CRM email ID found in webhook - cannot update email record:",
+        "[webhook] No CRM email ID found in webhook - will use recipient fallback:",
         { event, recipient }
       );
     }
 
-    // Handle permanent bounces (including 5.1.1)
+    // Handle permanent bounces (including 5.1.1, 4.2.2, 605)
     if (isPermanent && recipient) {
       console.warn(`[webhook] ⚠️ PERMANENT BOUNCE detected for ${recipient}:`, {
         code,
@@ -218,8 +228,9 @@ router.post("/mailgun", express.json(), async (req, res) => {
             `[webhook] ✓ Cancelled ${emailUpdateResult.count} pending email(s) for bounced recipient`
           );
 
-          // Also update the specific email that bounced
+          // Update the specific bounced email even without crmEmailId
           if (crmEmailId) {
+            // If we have crmEmailId, update that specific record
             try {
               await prisma.email.update({
                 where: { id: String(crmEmailId) },
@@ -236,9 +247,63 @@ router.post("/mailgun", express.json(), async (req, res) => {
                   }).slice(0, 20000),
                 },
               });
+              console.log(
+                `[webhook] ✓ Updated bounced email via crmEmailId: ${crmEmailId}`
+              );
             } catch (e) {
               console.warn(
                 "[webhook] Failed to update bounced email record:",
+                e
+              );
+            }
+          } else if (recipient) {
+            // ✅ FALLBACK: If no crmEmailId, find and update by recipient email
+            try {
+              const recentEmails = await prisma.email.findMany({
+                where: {
+                  influencer: {
+                    email: { equals: recipient, mode: "insensitive" },
+                  },
+                  status: "SENT", // Only update emails still marked as SENT
+                  sentAt: {
+                    gte: new Date(Date.now() - 24 * 60 * 60 * 1000), // Last 24 hours
+                  },
+                },
+                orderBy: { sentAt: "desc" },
+                take: 1,
+              });
+
+              if (recentEmails.length > 0) {
+                const emailToUpdate = recentEmails[0];
+
+                await prisma.email.update({
+                  where: { id: emailToUpdate.id },
+                  data: {
+                    status: "FAILED",
+                    errorMessage: JSON.stringify({
+                      event,
+                      code,
+                      severity,
+                      message: errorMessage,
+                      category: errorCategory,
+                      permanentBounce: true,
+                      timestamp: new Date().toISOString(),
+                      matchedBy: "recipient-fallback (no X-CRM-EMAIL-ID)",
+                    }).slice(0, 20000),
+                  },
+                });
+
+                console.log(
+                  `[webhook] ✓ Updated bounced email via recipient fallback: ${emailToUpdate.id} for ${recipient}`
+                );
+              } else {
+                console.warn(
+                  `[webhook] ⚠️ No recent SENT email found for bounced recipient: ${recipient}`
+                );
+              }
+            } catch (e) {
+              console.error(
+                "[webhook] Failed to update email record via recipient fallback:",
                 e
               );
             }
@@ -318,6 +383,68 @@ router.post("/mailgun", express.json(), async (req, res) => {
           console.log(
             `[webhook] ✓ Marked ${influencers.length} influencer(s) as REJECTED due to spam complaint`
           );
+
+          // ✅ Also update the email record for spam complaint
+          if (crmEmailId) {
+            try {
+              await prisma.email.update({
+                where: { id: String(crmEmailId) },
+                data: {
+                  status: "FAILED",
+                  errorMessage: JSON.stringify({
+                    event,
+                    reason: "Spam complaint",
+                    timestamp: new Date().toISOString(),
+                  }).slice(0, 20000),
+                },
+              });
+            } catch (e) {
+              console.warn(
+                "[webhook] Failed to update email for spam complaint:",
+                e
+              );
+            }
+          } else if (recipient) {
+            // Fallback for spam complaints without crmEmailId
+            try {
+              const recentEmails = await prisma.email.findMany({
+                where: {
+                  influencer: {
+                    email: { equals: recipient, mode: "insensitive" },
+                  },
+                  status: "SENT",
+                  sentAt: {
+                    gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
+                  },
+                },
+                orderBy: { sentAt: "desc" },
+                take: 1,
+              });
+
+              if (recentEmails.length > 0) {
+                await prisma.email.update({
+                  where: { id: recentEmails[0].id },
+                  data: {
+                    status: "FAILED",
+                    errorMessage: JSON.stringify({
+                      event,
+                      reason: "Spam complaint",
+                      timestamp: new Date().toISOString(),
+                      matchedBy: "recipient-fallback",
+                    }).slice(0, 20000),
+                  },
+                });
+                console.log(
+                  `[webhook] ✓ Updated spam complaint email via fallback: ${recentEmails[0].id}`
+                );
+              }
+            } catch (e) {
+              console.error(
+                "[webhook] Failed to update spam complaint via fallback:",
+                e
+              );
+            }
+          }
         }
       } catch (e) {
         console.error("[webhook] Failed to process spam complaint:", e);

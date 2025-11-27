@@ -94,7 +94,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
       recipient,
     });
 
-    // If we have CRM email ID, update that email row with event info
+    // ========== UPDATE EMAIL RECORD WITH CRM EMAIL ID ==========
     if (crmEmailId) {
       try {
         const updateData: any = {
@@ -149,7 +149,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
       );
     }
 
-    // Handle permanent bounces (including 5.1.1, 4.2.2, 605)
+    // ========== HANDLE PERMANENT BOUNCES ==========
     if (isPermanent && recipient) {
       console.warn(`[webhook] ⚠️ PERMANENT BOUNCE detected for ${recipient}:`, {
         code,
@@ -228,9 +228,9 @@ router.post("/mailgun", express.json(), async (req, res) => {
             `[webhook] ✓ Cancelled ${emailUpdateResult.count} pending email(s) for bounced recipient`
           );
 
-          // Update the specific bounced email even without crmEmailId
+          // ========== UPDATE THE SPECIFIC BOUNCED EMAIL ==========
           if (crmEmailId) {
-            // If we have crmEmailId, update that specific record
+            // We have crmEmailId - update directly
             try {
               await prisma.email.update({
                 where: { id: String(crmEmailId) },
@@ -257,19 +257,23 @@ router.post("/mailgun", express.json(), async (req, res) => {
               );
             }
           } else if (recipient) {
-            // ✅ FALLBACK: If no crmEmailId, find and update by recipient email
+            // ✅ PATH 2: No crmEmailId - find by recipient with EXPANDED STATUS FILTER
             try {
               const recentEmails = await prisma.email.findMany({
                 where: {
                   influencer: {
                     email: { equals: recipient, mode: "insensitive" },
                   },
-                  status: "SENT", // Only update emails still marked as SENT
-                  sentAt: {
-                    gte: new Date(Date.now() - 24 * 60 * 60 * 1000), // Last 24 hours
+                  // Accept PENDING, QUEUED, PROCESSING, or SENT
+                  // This catches emails that bounce before worker updates status
+                  status: { in: ["PENDING", "QUEUED", "PROCESSING", "SENT"] },
+
+                  // Bounces can arrive before sentAt is set
+                  createdAt: {
+                    gte: new Date(Date.now() - 5 * 60 * 1000), // Last 5 minutes
                   },
                 },
-                orderBy: { sentAt: "desc" },
+                orderBy: { createdAt: "desc" },
                 take: 1,
               });
 
@@ -298,7 +302,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
                 );
               } else {
                 console.warn(
-                  `[webhook] ⚠️ No recent SENT email found for bounced recipient: ${recipient}`
+                  `[webhook] ⚠️ No recent email found for bounced recipient: ${recipient}`
                 );
               }
             } catch (e) {
@@ -323,7 +327,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
       }
     }
 
-    // Handle temporary failures (log but don't reject influencer)
+    // ========== HANDLE TEMPORARY FAILURES ==========
     if (
       (event === "failed" || event === "bounced") &&
       !isPermanent &&
@@ -359,7 +363,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
       }
     }
 
-    // Handle spam complaints
+    // ========== HANDLE SPAM COMPLAINTS ==========
     if (event === "complained") {
       console.warn(`[webhook] ⚠️ SPAM COMPLAINT from ${recipient}`);
 
@@ -384,7 +388,7 @@ router.post("/mailgun", express.json(), async (req, res) => {
             `[webhook] ✓ Marked ${influencers.length} influencer(s) as REJECTED due to spam complaint`
           );
 
-          // ✅ Also update the email record for spam complaint
+          // Update the email record for spam complaint
           if (crmEmailId) {
             try {
               await prisma.email.update({
@@ -405,19 +409,21 @@ router.post("/mailgun", express.json(), async (req, res) => {
               );
             }
           } else if (recipient) {
-            // Fallback for spam complaints without crmEmailId
+            // Find spam complaint email by recipient with EXPANDED STATUS
             try {
               const recentEmails = await prisma.email.findMany({
                 where: {
                   influencer: {
                     email: { equals: recipient, mode: "insensitive" },
                   },
-                  status: "SENT",
-                  sentAt: {
-                    gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
+                  // Accept any pre-complaint status
+                  status: { in: ["PENDING", "QUEUED", "PROCESSING", "SENT"] },
+                  // Use createdAt for spam complaints too
+                  createdAt: {
+                    gte: new Date(Date.now() - 10 * 60 * 1000), // Last 10 minutes
                   },
                 },
-                orderBy: { sentAt: "desc" },
+                orderBy: { createdAt: "desc" },
                 take: 1,
               });
 

@@ -8,11 +8,12 @@ let subscriber: IORedis | null = null;
 
 /**
  * Initialize socket.io and a dedicated Redis subscriber that listens for
- * import/export progress messages and forwards them to manager rooms.
+ * import/export progress messages AND reply detection notifications.
  *
  * Workers SHOULD publish to channels:
  *   import:progress:<jobId>
  *   export:progress:<jobId>
+ *   reply:detected:<managerId>  ✅ NEW
  *
  * And include at least: { managerId, jobId, ...progressFields } as payload.
  */
@@ -48,18 +49,18 @@ export const initSocket = (server: http.Server) => {
       }
     );
 
-    // subscribe to progress patterns
-    // ioredis.psubscribe accepts multiple patterns (variadic)
+    // ✅ NEW: Subscribe to reply detection notifications
     subscriber.psubscribe(
       "import:progress:*",
       "export:progress:*",
+      "reply:detected:*", // ✅ NEW
       (err, count) => {
         if (err) {
           console.warn("[socket] redis psubscribe error:", err);
           return;
         }
         console.log(
-          "[socket] subscribed to import/export progress channels, count:",
+          "[socket] subscribed to import/export/reply channels, count:",
           count
         );
       }
@@ -68,11 +69,28 @@ export const initSocket = (server: http.Server) => {
     subscriber.on("pmessage", (_pattern, channel, message) => {
       try {
         const payload = JSON.parse(String(message) || "{}");
-        // Prefer payload.managerId if present (workers should include it).
         const { managerId, jobId, ...rest } = payload || {};
 
         const isImport = String(channel).startsWith("import:progress:");
         const isExport = String(channel).startsWith("export:progress:");
+        const isReply = String(channel).startsWith("reply:detected:"); // ✅ NEW
+
+        // ✅ NEW: Handle reply detection notifications
+        if (isReply) {
+          if (managerId && io) {
+            io.to(`manager:${managerId}`).emit("reply:detected", {
+              emailId: payload.emailId,
+              influencerId: payload.influencerId,
+              influencerEmail: payload.influencerEmail,
+              timestamp: payload.timestamp,
+            });
+            console.log(
+              `[socket] 📨 Sent reply notification to manager ${managerId}`
+            );
+          }
+          return;
+        }
+
         const event = isImport
           ? "import:progress"
           : isExport
@@ -85,17 +103,16 @@ export const initSocket = (server: http.Server) => {
           return;
         }
 
-        // Fallback: try to parse jobId from the channel (if worker didn't include managerId)
+        // Fallback: try to parse jobId from the channel
         const match = String(channel).match(/^(import|export):progress:(.+)$/);
         const jobIdFromChannel = match ? match[2] : null;
 
         if (jobIdFromChannel && io) {
-          // Broadcast only the standardized envelope, not raw payload directly
           io.emit(event, { jobId: jobIdFromChannel, ...(payload || {}) });
           return;
         }
 
-        // As a last resort, if no managerId and no jobId, broadcast raw payload under 'progress' event
+        // Last resort
         if (io) {
           io.emit("progress", payload);
         }

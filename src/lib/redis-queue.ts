@@ -16,6 +16,7 @@ import { sendMailgunEmail } from "./mailgun-client";
 import { checkForReplyAndHandle } from "./followup-service";
 import { copyToGmailSent } from "./gmail-sent-copy";
 import { EmailStatus, InfluencerStatus } from "@prisma/client";
+import { checkAllRecentReplies } from "./reply-checker";
 
 const prisma = getPrisma();
 
@@ -174,6 +175,14 @@ export const followUpQueue = QueueClass
       remove: async () => {},
     } as any);
 
+export const replyCheckQueue = QueueClass
+  ? new QueueClass("reply-check-queue", queueOpts)
+  : ({
+      name: "reply-check-queue",
+      add: async () => ({}),
+      remove: async () => {},
+    } as any);
+
 /* ---------- Scheduler helpers ---------- */
 const tryUpsertScheduler = async (queue: any, schedulerId: string) => {
   if (!queue) return false;
@@ -268,9 +277,56 @@ ensureSchedulers().catch((e) => {
   console.warn("[redis-queue] ensureSchedulers error:", e);
 });
 
+// Add this function after ensureSchedulers
+const setupReplyChecker = async () => {
+  try {
+    if (!QueueClass) {
+      await dynamicResolve();
+    }
+
+    if (!QueueClass || !replyCheckQueue) {
+      console.warn(
+        "[redis-queue] Reply check queue not available, periodic reply checking disabled"
+      );
+      return;
+    }
+
+    // Every 10-15 minutes
+    const REPLY_CHECK_INTERVAL = Number(
+      process.env.REPLY_CHECK_INTERVAL_MS || 10 * 60 * 1000
+    ); // Default: 10 minutes
+
+    await replyCheckQueue.add(
+      "periodic-reply-check",
+      { timestamp: new Date().toISOString() },
+      {
+        repeat: {
+          every: REPLY_CHECK_INTERVAL,
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      }
+    );
+
+    console.log(
+      `[redis-queue] ✓ Periodic reply checker scheduled (every ${
+        REPLY_CHECK_INTERVAL / 1000 / 60
+      } minutes)`
+    );
+  } catch (err) {
+    console.warn("[redis-queue] Failed to setup reply checker:", err);
+  }
+};
+
+// Call it after ensureSchedulers
+setupReplyChecker().catch((e) => {
+  console.warn("[redis-queue] setupReplyChecker error:", e);
+});
+
 /* ---------- Workers ---------- */
 let emailWorker: any = null;
 let followUpWorker: any = null;
+let replyCheckWorker: any = null;
 
 const startWorkers = async () => {
   try {
@@ -612,6 +668,50 @@ const startWorkers = async () => {
       }
     );
 
+    replyCheckWorker = new WorkerClass(
+      "reply-check-queue",
+      async (job: any) => {
+        const jobName = job?.name ?? "";
+        const jobId = job?.id ?? "";
+
+        console.log("[replyCheckWorker] Starting periodic reply check", {
+          jobId,
+          jobName,
+          timestamp: job.data?.timestamp,
+        });
+
+        try {
+          const stats = await checkAllRecentReplies();
+
+          console.log("[replyCheckWorker] ✓ Reply check completed:", stats);
+        } catch (error) {
+          console.error("[replyCheckWorker] Reply check failed:", error);
+          throw error;
+        }
+      },
+      {
+        connection,
+        prefix,
+        concurrency: 1, // Only run one reply check at a time
+      }
+    );
+
+    replyCheckWorker.on("active", (job: any) => {
+      console.log("[redis-queue] reply check job active:", {
+        id: job.id,
+        name: job.name,
+      });
+    });
+    replyCheckWorker.on("completed", (job: any) =>
+      console.log("[redis-queue] reply check job completed:", job.id)
+    );
+    replyCheckWorker.on("failed", (job: any, err: any) =>
+      console.error("[redis-queue] reply check job failed:", job?.id, err)
+    );
+    replyCheckWorker.on("error", (err: any) =>
+      console.error("[redis-queue] replyCheckWorker error event:", err)
+    );
+
     // active / error handlers for emailWorker
     emailWorker.on("active", (job: any) => {
       console.log("[redis-queue] email job active:", {
@@ -725,11 +825,13 @@ export const addBulkEmailJobs = async (
   if (!Array.isArray(jobsData) || jobsData.length === 0) return ids;
 
   const isProd = process.env.NODE_ENV === "production";
-  const envInterval =
-    Number(process.env.BULK_SEND_INTERVAL_SEC) ||
-    (isProd ? 5 : Number(process.env.DEV_BULK_SEND_INTERVAL_SEC) || 2);
+  const envInterval = isProd
+    ? Number(process.env.BULK_SEND_INTERVAL_SEC) || 5 // Production uses BULK_SEND_INTERVAL_SEC
+    : Number(process.env.DEV_BULK_SEND_INTERVAL_SEC) || 30;
+
   const intervalSec =
     typeof opts?.intervalSec === "number" ? opts.intervalSec : envInterval;
+
   const jitterBoundMs =
     typeof opts?.jitterMs === "number" ? opts.jitterMs : isProd ? 2000 : 0;
 
@@ -787,8 +889,10 @@ export const cleanup = async () => {
   try {
     if (emailWorker) await emailWorker.close();
     if (followUpWorker) await followUpWorker.close();
+    if (replyCheckWorker) await replyCheckWorker.close();
     await emailSendQueue.close();
     await followUpQueue.close();
+    await replyCheckQueue.close();
     await connection.quit();
   } catch (err) {
     console.warn("[redis-queue] cleanup error:", err);

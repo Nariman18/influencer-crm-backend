@@ -340,22 +340,32 @@ async function processLargeImport(job: Job<ImportJobData>) {
 
       try {
         const duplicateMap = await checkBatchDuplicates(buffer, managerId);
+
+        // Check BOTH name AND handle keys separately
         const uniqueRows = buffer.filter((row) => {
           const name = row.name ? row.name.toLowerCase().trim() : "";
           const handle = row.instagramHandle
             ? String(row.instagramHandle).toLowerCase().trim()
             : "";
-          const key = `${name}|${handle}`;
-          return !duplicateMap.has(key);
+
+          // Check if EITHER name OR handle is in duplicate map
+          const isDuplicateName = name && duplicateMap.has(name);
+          const isDuplicateHandle = handle && duplicateMap.has(handle);
+
+          return !(isDuplicateName || isDuplicateHandle);
         });
 
+        // Track duplicates correctly
         buffer.forEach((row) => {
           const name = row.name ? row.name.toLowerCase().trim() : "";
           const handle = row.instagramHandle
             ? String(row.instagramHandle).toLowerCase().trim()
             : "";
-          const key = `${name}|${handle}`;
-          if (duplicateMap.has(key)) {
+
+          const isDuplicateName = name && duplicateMap.has(name);
+          const isDuplicateHandle = handle && duplicateMap.has(handle);
+
+          if (isDuplicateName || isDuplicateHandle) {
             skipStats.duplicates++;
             duplicates.push({
               name: row.name,
@@ -538,8 +548,7 @@ Other errors:          ${skipStats.otherErrors}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Total skipped:         ${skipStats.total}
 
-EXPECTED vs ACTUAL:
-Your Excel: 4898 unique records
+ACTUAL:
 CRM Import: ${success} records
     `);
 
@@ -759,22 +768,32 @@ async function processStandardImport(job: Job<ImportJobData>) {
 
     if (validRows.length > 0) {
       const duplicateMap = await checkBatchDuplicates(validRows, managerId);
+
+      // Check BOTH name AND handle keys separately
       const uniqueRows = validRows.filter((row) => {
         const name = row.name ? row.name.toLowerCase().trim() : "";
         const handle = row.instagramHandle
           ? String(row.instagramHandle).toLowerCase().trim()
           : "";
-        const key = `${name}|${handle}`;
-        return !duplicateMap.has(key);
+
+        // Check if EITHER name OR handle is in duplicate map
+        const isDuplicateName = name && duplicateMap.has(name);
+        const isDuplicateHandle = handle && duplicateMap.has(handle);
+
+        return !(isDuplicateName || isDuplicateHandle);
       });
 
+      // Track duplicates correctly
       validRows.forEach((row) => {
         const name = row.name ? row.name.toLowerCase().trim() : "";
         const handle = row.instagramHandle
           ? String(row.instagramHandle).toLowerCase().trim()
           : "";
-        const key = `${name}|${handle}`;
-        if (duplicateMap.has(key)) {
+
+        const isDuplicateName = name && duplicateMap.has(name);
+        const isDuplicateHandle = handle && duplicateMap.has(handle);
+
+        if (isDuplicateName || isDuplicateHandle) {
           skipStats.duplicates++;
           duplicates.push({
             name: row.name,

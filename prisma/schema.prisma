@@ -77,7 +77,7 @@ model Influencer {
   id              String            @id @default(uuid())
   name            String
   email           String?
-  instagramHandle String?           @unique
+  instagramHandle String?         
   followers       Int?
   link            String?
   country         String?

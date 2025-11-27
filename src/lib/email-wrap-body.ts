@@ -6,11 +6,13 @@ export const normalizeBodyToHtml = (body: string): string => {
 
 /**
  * Build professional email HTML with conditional footer based on recipient domain
+ * 🔥 WARM-UP OPTIMIZATION: Footer removed for Gmail + Russian providers during warm-up
+ *
  * @param body - Email body content
  * @param influencerName - Recipient name (currently unused but kept for compatibility)
  * @param senderEmail - Sender's email address
  * @param senderName - Sender's name (optional)
- * @param recipientEmail - Recipient's email address (for Russian provider detection)
+ * @param recipientEmail - Recipient's email address (for provider detection)
  */
 export const buildEmailHtml = (
   body: string,
@@ -22,12 +24,25 @@ export const buildEmailHtml = (
   const safeBodyHtml = normalizeBodyToHtml(body || "");
   const fromName = senderName || senderEmail.split("@")[0];
 
-  // ✅ Detect Russian email providers
+  // ✅ WARM-UP: Detect providers that require no footer
   const recipientDomain = recipientEmail?.split("@").pop()?.toLowerCase() || "";
-  const RUSSIAN_PROVIDERS = ["mail.ru", "yandex.ru", "rambler.ru", "bk.ru"];
-  const isRussianProvider = RUSSIAN_PROVIDERS.includes(recipientDomain);
 
-  // ✅ Build unsubscribe mailto link (only for non-Russian providers)
+  // 🔥 CRITICAL: During warm-up, remove footer for Gmail AND Russian providers
+  const WARMUP_NO_FOOTER_PROVIDERS = [
+    // Russian providers (strict spam filters)
+    "mail.ru",
+    "yandex.ru",
+    "rambler.ru",
+    "bk.ru",
+    // Gmail (during warm-up phase - week 1-3)
+    "gmail.com",
+    "googlemail.com",
+    // Add other strict providers as needed
+  ];
+
+  const shouldSkipFooter = WARMUP_NO_FOOTER_PROVIDERS.includes(recipientDomain);
+
+  // Build unsubscribe mailto link (only used for non-warmup providers)
   const unsubscribeLink = `mailto:${
     process.env.MAILGUN_REPLY_TO_EMAIL || senderEmail
   }?subject=Unsubscribe`;
@@ -135,7 +150,7 @@ export const buildEmailHtml = (
       </div>
 
       ${
-        !isRussianProvider
+        !shouldSkipFooter
           ? `<div class="footer">
         <p style="margin: 0 0 8px 0; font-size: 11px; color: #9CA3AF;">
           Reply directly to this email to continue the conversation.
@@ -144,7 +159,7 @@ export const buildEmailHtml = (
           <a href="${unsubscribeLink}" class="footer-link" style="color: #6B7280; text-decoration: none;">Unsubscribe</a>
         </div>
       </div>`
-          : `<!-- Footer removed for Russian email provider: ${recipientDomain} -->`
+          : `<!-- Footer removed for warm-up optimization: ${recipientDomain} -->`
       }
     </div>
   </body>

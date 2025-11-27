@@ -110,16 +110,24 @@ export const sendMailgunEmail = async (opts: {
     return { success: false, error: msg };
   }
 
-  // Extract recipient domain for diagnostics and Russian provider detection
+  // Extract recipient domain for diagnostics and provider detection
   const recipientDomain = opts.to.split("@").pop()?.toLowerCase();
 
-  // Detect Russian email providers (they have the strictest spam filters)
+  // 🔥 WARM-UP: Detect strict providers (Russian + Gmail)
   const RUSSIAN_PROVIDERS = ["mail.ru", "yandex.ru", "rambler.ru", "bk.ru"];
+  const GMAIL_PROVIDERS = ["gmail.com", "googlemail.com"];
+
   const isRussianProvider = RUSSIAN_PROVIDERS.includes(recipientDomain || "");
+  const isGmailProvider = GMAIL_PROVIDERS.includes(recipientDomain || "");
+  const isStrictProvider = isRussianProvider || isGmailProvider;
 
   if (isRussianProvider) {
     console.log(
       `[mailgun-client] 🇷🇺 Russian provider detected: ${recipientDomain} - applying strict optimizations`
+    );
+  } else if (isGmailProvider) {
+    console.log(
+      `[mailgun-client] 📧 Gmail detected: ${recipientDomain} - applying warm-up optimizations`
     );
   }
 
@@ -130,10 +138,12 @@ export const sendMailgunEmail = async (opts: {
       to: opts.to,
       subject: opts.subject.substring(0, 50),
       isRussianProvider,
+      isGmailProvider,
+      warmUpMode: isStrictProvider,
     }
   );
 
-  // Check MX records for domain (helps diagnose mail.ru issues)
+  // Check MX records for domain
   if (recipientDomain) {
     try {
       const hasMX = await domainHasMX(recipientDomain);
@@ -212,19 +222,16 @@ export const sendMailgunEmail = async (opts: {
     console.log("[mailgun-client] Reply-To set to:", replyToAddress);
   }
 
-  // Russian providers REQUIRE no tracking
-  if (isRussianProvider) {
-    form.append("o:tracking", "no"); // Completely disable tracking
-    form.append("o:tracking-clicks", "no");
-    form.append("o:tracking-opens", "no");
+  // 🔥 WARM-UP CRITICAL: Disable ALL tracking during warm-up period
+  // This applies to BOTH Russian providers AND Gmail
+  form.append("o:tracking", "no");
+  form.append("o:tracking-clicks", "no");
+  form.append("o:tracking-opens", "no");
+
+  if (isStrictProvider) {
     console.log(
-      "[mailgun-client] 🇷🇺 Disabled all tracking for Russian provider"
+      `[mailgun-client] 🔒 WARM-UP: All tracking disabled for ${recipientDomain}`
     );
-  } else {
-    // Normal providers: minimal tracking
-    form.append("o:tracking", "yes");
-    form.append("o:tracking-clicks", "no");
-    form.append("o:tracking-opens", "no");
   }
 
   // Generate unique Message-ID
@@ -242,23 +249,33 @@ export const sendMailgunEmail = async (opts: {
   form.append("h:MIME-Version", "1.0");
   form.append("h:Content-Type", "text/html; charset=UTF-8");
 
-  // Russian providers hate "List-Unsubscribe" - skip it for them
-  if (!isRussianProvider && replyToAddress) {
+  // 🔥 WARM-UP: Skip List-Unsubscribe for strict providers
+  if (!isStrictProvider && replyToAddress) {
     form.append(
       "h:List-Unsubscribe",
       `<mailto:${replyToAddress}?subject=Unsubscribe>`
+    );
+  } else if (isStrictProvider) {
+    console.log(
+      `[mailgun-client] 🔒 WARM-UP: Skipped 'List-Unsubscribe' for ${recipientDomain}`
     );
   }
 
   // Custom headers for better deliverability
   form.append("h:X-Mailer", "Collaboration Platform 1.0");
 
-  // Russian providers HATE "Precedence: bulk" header
-  if (!isRussianProvider) {
+  // 🔥 WARM-UP CRITICAL: Skip "Precedence: bulk" for strict providers
+  // Gmail AND Russian providers both hate this header during warm-up
+  const SKIP_BULK_HEADER_PROVIDERS = [...RUSSIAN_PROVIDERS, ...GMAIL_PROVIDERS];
+  const skipBulkHeader = SKIP_BULK_HEADER_PROVIDERS.includes(
+    recipientDomain || ""
+  );
+
+  if (!skipBulkHeader) {
     form.append("h:Precedence", "bulk");
   } else {
     console.log(
-      "[mailgun-client] 🇷🇺 Skipped 'Precedence: bulk' header for Russian provider"
+      `[mailgun-client] 🔒 WARM-UP: Skipped 'Precedence: bulk' for ${recipientDomain}`
     );
   }
 
@@ -276,6 +293,8 @@ export const sendMailgunEmail = async (opts: {
     subject: opts.subject.substring(0, 50),
     replyTo: replyToAddress,
     isRussianProvider,
+    isGmailProvider,
+    warmUpOptimizations: isStrictProvider,
   });
 
   const MAX_RETRIES = Math.max(1, Number(process.env.MAILGUN_MAX_RETRIES || 5));
@@ -389,6 +408,8 @@ export const sendMailgunEmail = async (opts: {
         mailgunId: rawId,
         messageIdNormalized: normalizedId,
         isRussianProvider,
+        isGmailProvider,
+        warmUpMode: isStrictProvider,
       }
     );
 
@@ -418,6 +439,7 @@ export const sendMailgunEmail = async (opts: {
         error: responseData || err?.message || err,
         domain: recipientDomain,
         isRussianProvider,
+        isGmailProvider,
       }
     );
 

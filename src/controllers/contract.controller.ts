@@ -109,7 +109,6 @@ export const createContract = async (
       endDate,
       deliverables,
       terms,
-      // New contract fields from Ready Influencers
       nickname,
       link,
       contactMethod,

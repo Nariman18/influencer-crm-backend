@@ -61,9 +61,6 @@ model User {
   googleEmail       String?    
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
-
-  gmailHistoryId       String?   @db.VarChar(100)
-  gmailWatchExpiration DateTime?
   
   campaigns         Campaign[]
   emailsSent        Email[]

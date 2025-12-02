@@ -384,7 +384,7 @@ export const sendEmail = async (
       influencer.name || "",
       senderAddress,
       senderUser?.name || undefined,
-      influencer.email || undefined // ✅ ADDED: recipientEmail parameter
+      influencer.email || undefined
     );
 
     const email = await prisma.email.create({

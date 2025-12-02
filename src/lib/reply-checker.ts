@@ -325,7 +325,7 @@ export async function checkUserReplies(userId: string): Promise<{
     const sentEmails = await prisma.email.findMany({
       where: {
         sentById: userId,
-        status: EmailStatus.SENT, // ✅ Only check SENT emails
+        status: EmailStatus.SENT, // Only check SENT emails
         sentAt: {
           gte: cutoffDate,
         },

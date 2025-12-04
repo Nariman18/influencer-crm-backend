@@ -79,7 +79,7 @@ export const buildEmailHtml = (
               <div style="font-weight:600;color:#111827;font-size:15px;margin-top:8px;">${escapeHtml(
                 fromName
               )}</div>
-              <div style="color:#6b7280;font-size:13px;margin-top:4px;">IMX — Partnerships</div>
+              <div style="color:#6b7280;font-size:13px;margin-top:4px;">IMX Agency</div>
             </div>
           </td></tr>
 

@@ -266,25 +266,27 @@ export const sendMailgunEmail = async (opts: {
       replyToAddress || process.env.MAILGUN_FROM_EMAIL || FROM_EMAIL;
     const unsubscribeParts: string[] = [];
 
-    // always add mailto if we have replyTo (safe)
-    if (replyToAddr) {
-      unsubscribeParts.push(`<mailto:${replyToAddr}?subject=Unsubscribe>`);
-    }
-
     const warmupDays = Number(opts.warmupDay || 0);
     const hasPassedWarmup = warmupDays >= WARMUP_DAYS_THRESHOLD;
 
-    const candidateHttps =
-      (opts.unsubscribeUrl && String(opts.unsubscribeUrl).trim()) ||
-      (process.env.MAILGUN_UNSUBSCRIBE_URL &&
-        String(process.env.MAILGUN_UNSUBSCRIBE_URL).trim());
+    // IMPORTANT: Do NOT add any List-Unsubscribe at all while warming up
+    // or for strict providers (Gmail and Russian providers). Add it only
+    // after the warmup threshold passed and only for non-strict providers.
+    if (hasPassedWarmup && !isStrictProvider) {
+      // mailto is safe and useful — include when warmup passed
+      if (replyToAddr) {
+        unsubscribeParts.push(`<mailto:${replyToAddr}?subject=Unsubscribe>`);
+      }
 
-    if (
-      candidateHttps &&
-      String(candidateHttps).startsWith("http") &&
-      hasPassedWarmup
-    ) {
-      unsubscribeParts.push(`<${String(candidateHttps).trim()}>`);
+      // add HTTPS unsubscribe page only when provided and warmup passed
+      const candidateHttps =
+        (opts.unsubscribeUrl && String(opts.unsubscribeUrl).trim()) ||
+        (process.env.MAILGUN_UNSUBSCRIBE_URL &&
+          String(process.env.MAILGUN_UNSUBSCRIBE_URL).trim());
+
+      if (candidateHttps && String(candidateHttps).startsWith("http")) {
+        unsubscribeParts.push(`<${String(candidateHttps).trim()}>`);
+      }
     }
 
     if (unsubscribeParts.length > 0) {
@@ -295,7 +297,7 @@ export const sendMailgunEmail = async (opts: {
       );
     } else {
       console.log(
-        "[mailgun-client] Skipped List-Unsubscribe header (warmup or none available)"
+        "[mailgun-client] Skipped List-Unsubscribe header (still warming up or strict provider)"
       );
     }
   } catch (luErr) {

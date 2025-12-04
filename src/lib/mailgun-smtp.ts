@@ -59,6 +59,7 @@ export const sendViaSmtp = async (opts: {
   from?: string;
   replyTo?: string;
   headers?: Record<string, string>;
+  unsubscribeUrl?: string;
 }) => {
   if (!host || !user || !pass) {
     throw new Error("SMTP credentials missing");
@@ -106,7 +107,12 @@ export const sendViaSmtp = async (opts: {
     "Message-ID": messageId,
     "MIME-Version": "1.0",
     ...(opts.replyTo && {
-      "List-Unsubscribe": `<mailto:${opts.replyTo}?subject=Unsubscribe>`,
+      // Add mailto first
+      "List-Unsubscribe": `<mailto:${opts.replyTo}?subject=Unsubscribe>${
+        process.env.MAILGUN_UNSUBSCRIBE_URL || opts.unsubscribeUrl
+          ? `, <${process.env.MAILGUN_UNSUBSCRIBE_URL || opts.unsubscribeUrl}>`
+          : ""
+      }`,
     }),
     ...opts.headers,
   };

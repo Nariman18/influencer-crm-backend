@@ -96,6 +96,8 @@ export const sendMailgunEmail = async (opts: {
   html: string;
   replyTo?: string;
   headers?: Record<string, string>;
+  warmupDay?: number;
+  unsubscribeUrl?: string;
   senderName?: string;
 }): Promise<SendResult> => {
   // Basic email validation
@@ -113,7 +115,7 @@ export const sendMailgunEmail = async (opts: {
   // Extract recipient domain for diagnostics and provider detection
   const recipientDomain = opts.to.split("@").pop()?.toLowerCase();
 
-  // 🔥 WARM-UP: Detect strict providers (Russian + Gmail)
+  // Detect strict providers (Russian + Gmail)
   const RUSSIAN_PROVIDERS = ["mail.ru", "yandex.ru", "rambler.ru", "bk.ru"];
   const GMAIL_PROVIDERS = ["gmail.com", "googlemail.com"];
 
@@ -222,7 +224,7 @@ export const sendMailgunEmail = async (opts: {
     console.log("[mailgun-client] Reply-To set to:", replyToAddress);
   }
 
-  // 🔥 WARM-UP CRITICAL: Disable ALL tracking during warm-up period
+  // Disabling ALL tracking during warm-up period
   // This applies to BOTH Russian providers AND Gmail
   form.append("o:tracking", "no");
   form.append("o:tracking-clicks", "no");
@@ -249,22 +251,34 @@ export const sendMailgunEmail = async (opts: {
   form.append("h:MIME-Version", "1.0");
   form.append("h:Content-Type", "text/html; charset=UTF-8");
 
-  // 🔥 WARM-UP: Skip List-Unsubscribe for strict providers
-  if (!isStrictProvider && replyToAddress) {
-    form.append(
-      "h:List-Unsubscribe",
-      `<mailto:${replyToAddress}?subject=Unsubscribe>`
-    );
-  } else if (isStrictProvider) {
+  // Skipping List-Unsubscribe for strict providers
+  const unsubscribeMailto = replyToAddress;
+  if (!isStrictProvider && unsubscribeMailto) {
+    const parts = [`<mailto:${unsubscribeMailto}?subject=Unsubscribe>`];
+    if (opts.unsubscribeUrl) {
+      // make sure it's a full https url
+      const cleanUrl = String(opts.unsubscribeUrl).trim();
+      if (cleanUrl.startsWith("http")) parts.push(`<${cleanUrl}>`);
+    } else if (process.env.MAILGUN_UNSUBSCRIBE_URL) {
+      const envUrl = String(process.env.MAILGUN_UNSUBSCRIBE_URL).trim();
+      if (envUrl.startsWith("http")) parts.push(`<${envUrl}>`);
+    }
+    // join with comma per RFC
+    form.append("h:List-Unsubscribe", parts.join(", "));
     console.log(
-      `[mailgun-client] 🔒 WARM-UP: Skipped 'List-Unsubscribe' for ${recipientDomain}`
+      "[mailgun-client] Added List-Unsubscribe header:",
+      parts.join(", ")
+    );
+  } else {
+    console.log(
+      `[mailgun-client] Skipped List-Unsubscribe for ${recipientDomain} (warmup/strict)`
     );
   }
 
   // Custom headers for better deliverability
   form.append("h:X-Mailer", "Collaboration Platform 1.0");
 
-  // 🔥 WARM-UP CRITICAL: Skip "Precedence: bulk" for strict providers
+  // Skip "Precedence: bulk" for strict providers
   // Gmail AND Russian providers both hate this header during warm-up
   const SKIP_BULK_HEADER_PROVIDERS = [...RUSSIAN_PROVIDERS, ...GMAIL_PROVIDERS];
   const skipBulkHeader = SKIP_BULK_HEADER_PROVIDERS.includes(

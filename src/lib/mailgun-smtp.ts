@@ -48,7 +48,7 @@ if (!host || !user || !pass) {
 /**
  * sendViaSmtp(opts)
  * - opts.to, opts.subject, opts.html
- * - optional opts.from, opts.replyTo, opts.headers
+ * - optional opts.from, opts.replyTo, opts.headers, unsubscribeUrl, warmupDay
  *
  * Returns: { success: true, info } or throws.
  */
@@ -60,6 +60,7 @@ export const sendViaSmtp = async (opts: {
   replyTo?: string;
   headers?: Record<string, string>;
   unsubscribeUrl?: string;
+  warmupDay?: number;
 }) => {
   if (!host || !user || !pass) {
     throw new Error("SMTP credentials missing");
@@ -103,17 +104,35 @@ export const sendViaSmtp = async (opts: {
     .substring(2, 15)}`;
   const messageId = `<${uniqueId}@${domain}>`;
 
+  // Warmup threshold (compatibility with client)
+  const WARMUP_DAYS_THRESHOLD = Number(
+    process.env.WARMUP_DAYS_THRESHOLD || process.env.WarmUpDateTreasure || 15
+  );
+  const warmupDays = Number(opts.warmupDay || 0);
+  const passedThreshold = warmupDays >= WARMUP_DAYS_THRESHOLD;
+
+  const unsubscribeParts: string[] = [];
+  if (opts.replyTo) {
+    unsubscribeParts.push(`<mailto:${opts.replyTo}?subject=Unsubscribe>`);
+  }
+  // Only include https unsubscribe when warmup threshold passed and url present
+  if (
+    opts.unsubscribeUrl &&
+    String(opts.unsubscribeUrl).startsWith("http") &&
+    passedThreshold
+  ) {
+    unsubscribeParts.push(`<${opts.unsubscribeUrl}>`);
+  } else if (process.env.MAILGUN_UNSUBSCRIBE_URL && passedThreshold) {
+    const envU = String(process.env.MAILGUN_UNSUBSCRIBE_URL).trim();
+    if (envU.startsWith("http")) unsubscribeParts.push(`<${envU}>`);
+  }
+
   const enhancedHeaders: Record<string, string> = {
     "Message-ID": messageId,
     "MIME-Version": "1.0",
-    ...(opts.replyTo && {
-      // Add mailto first
-      "List-Unsubscribe": `<mailto:${opts.replyTo}?subject=Unsubscribe>${
-        process.env.MAILGUN_UNSUBSCRIBE_URL || opts.unsubscribeUrl
-          ? `, <${process.env.MAILGUN_UNSUBSCRIBE_URL || opts.unsubscribeUrl}>`
-          : ""
-      }`,
-    }),
+    ...(unsubscribeParts.length
+      ? { "List-Unsubscribe": unsubscribeParts.join(", ") }
+      : {}),
     ...opts.headers,
   };
 

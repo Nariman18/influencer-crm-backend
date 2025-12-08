@@ -102,7 +102,7 @@ export async function getBouncedEmails(): Promise<string[]> {
 
   try {
     while (nextUrl) {
-      // ✅ Fix: Explicitly type the response
+      // Explicitly type the response
       const response: AxiosResponse<{
         items?: Array<{ address?: string }>;
         paging?: { next?: string };
@@ -311,7 +311,7 @@ export async function getComplainedEmails(): Promise<string[]> {
 
   try {
     while (nextUrl) {
-      // ✅ Fix: Explicitly type the response
+      // Explicitly type the response
       const response: AxiosResponse<{
         items?: Array<{ address?: string }>;
         paging?: { next?: string };

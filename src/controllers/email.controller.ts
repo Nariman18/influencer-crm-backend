@@ -13,6 +13,32 @@ import { canSendMore } from "../lib/warmup-tracker";
 const prisma = getPrisma();
 const OAuth2 = google.auth.OAuth2;
 
+/**
+ * Utility: sanitize local part + produce plus-addressing sender at MAILGUN_DOMAIN.
+ * Example: "Anna Smith" and userId "abc" => anna.smith+abc@mail.imx.agency
+ */
+function sanitizeLocal(s: string) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9+._-]/g, ".")
+    .replace(/\.+/g, ".")
+    .replace(/^\.+|\.+$/g, "")
+    .slice(0, 64);
+}
+
+function makeSenderEmailForManager(userId: string, fallbackEmail?: string) {
+  const domain =
+    process.env.MAILGUN_DOMAIN ||
+    process.env.MAILGUN_FROM_EMAIL?.split("@").pop() ||
+    null;
+  const localSource = fallbackEmail
+    ? String(fallbackEmail.split("@")[0] || "no-reply")
+    : "no-reply";
+  const local = sanitizeLocal(localSource);
+  if (!domain) return `${local}+${userId}@example.invalid`;
+  return `${local}+${userId}@${domain}`;
+}
+
 export class EmailService {
   public static async validateGmailAccess(userId: string): Promise<boolean> {
     try {
@@ -156,13 +182,13 @@ export class EmailService {
           process.env.MAILGUN_FROM_EMAIL ||
           "";
 
-        // ✅ FIXED: Pass 'to' as recipientEmail (5th parameter)
+        // For Gmail API sends we continue to send from the user's Gmail address (Gmail enforces this)
         const wrappedHtml = buildEmailHtml(
           body,
           influencerName,
           senderAddress,
           user.name || undefined,
-          to // ✅ CORRECT: Use 'to' parameter instead of 'influencer.email'
+          to // recipientEmail parameter
         );
 
         const emailLines = [
@@ -378,11 +404,14 @@ export const sendEmail = async (
       process.env.MAILGUN_FROM_EMAIL ||
       "";
 
-    // ✅ FIXED: Pass influencer.email as 5th parameter
+    // Build a per-manager senderEmail (plus-addressing) for the envelope
+    const senderEmail = makeSenderEmailForManager(req.user.id, senderAddress);
+
+    // Build wrapped body using the envelope senderEmail as visible from (keeps HTML consistent)
     const wrappedBody = buildEmailHtml(
       body,
       influencer.name || "",
-      senderAddress,
+      senderEmail, // <-- visible From for HTML
       senderUser?.name || undefined,
       influencer.email || undefined
     );
@@ -405,9 +434,10 @@ export const sendEmail = async (
       body: wrappedBody,
       influencerName: influencer.name,
       senderName: senderUser?.name || undefined,
+      senderEmail,
       emailRecordId: email.id,
       influencerId: influencer.id,
-      replyTo: senderAddress,
+      replyTo: senderAddress, // Gmail address where replies should go
     });
 
     const queuedEmail = await prisma.email.findUnique({
@@ -453,16 +483,6 @@ export const bulkSendEmails = async (
       throw new AppError(volumeCheck.message || "Daily limit reached", 429);
     }
 
-    console.log(
-      `[bulkSend] ✓ Warm-up check passed. Sending ${influencerIds.length} emails. ` +
-        `Today: ${volumeCheck.sent + influencerIds.length}/${
-          volumeCheck.limit
-        } ` +
-        `(${
-          volumeCheck.remaining - influencerIds.length
-        } remaining after this batch)`
-    );
-
     if (!templateId)
       throw new AppError("Template ID is required for bulk sending", 400);
 
@@ -493,6 +513,9 @@ export const bulkSendEmails = async (
       senderUser?.email ||
       process.env.MAILGUN_FROM_EMAIL ||
       "";
+
+    // Build per-manager envelope senderEmail
+    const senderEmail = makeSenderEmailForManager(req.user.id, senderAddress);
 
     for (const influencerId of influencerIds) {
       try {
@@ -540,9 +563,9 @@ export const bulkSendEmails = async (
                   email: influencer.email,
                 }),
                 influencer.name || "",
-                senderAddress,
+                senderEmail,
                 senderUser?.name || undefined,
-                influencer.email || undefined // ✅ ADDED: recipientEmail parameter
+                influencer.email || undefined
               ),
               status: EmailStatus.FAILED,
               errorMessage: `No MX records for domain: ${domain}`,
@@ -573,9 +596,9 @@ export const bulkSendEmails = async (
                   email: influencer.email,
                 }),
                 influencer.name || "",
-                senderAddress,
+                senderEmail,
                 senderUser?.name || undefined,
-                influencer.email || undefined // ✅ ADDED: recipientEmail parameter
+                influencer.email || undefined
               ),
               status: EmailStatus.FAILED,
               errorMessage:
@@ -597,13 +620,12 @@ export const bulkSendEmails = async (
         const subject = replaceVariables(template.subject, personalizedVars);
         const body = replaceVariables(template.body, personalizedVars);
 
-        // ✅ FIXED: Pass influencer.email as 5th parameter
         const wrappedBody = buildEmailHtml(
           body,
           influencer.name || "",
-          senderAddress,
+          senderEmail, // envelope visible From
           senderUser?.name || undefined,
-          influencer.email || undefined // ✅ ADDED: recipientEmail parameter
+          influencer.email || undefined
         );
 
         const email = await prisma.email.create({
@@ -628,9 +650,10 @@ export const bulkSendEmails = async (
           body: wrappedBody,
           influencerName: influencer.name,
           senderName: senderUser?.name || undefined,
+          senderEmail, // <-- pass sender envelope email
           emailRecordId: email.id,
           influencerId: influencer.id,
-          replyTo: senderAddress,
+          replyTo: senderAddress, // Gmail - where replies should go
         };
 
         if (startAutomation) {

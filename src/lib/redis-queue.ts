@@ -31,6 +31,7 @@ export type EmailJobData = {
   replyTo?: string;
   automation?: { start?: boolean; templates?: string[] };
   senderName?: string;
+  senderEmail?: string;
 };
 
 const normalizeError = (x: any): string => {
@@ -436,6 +437,7 @@ const startWorkers = async () => {
             html: data.body,
             replyTo: data.replyTo || process.env.MAILGUN_FROM_EMAIL!,
             senderName: data.senderName,
+            senderEmail: data.senderEmail,
             headers: {
               "X-CRM-EMAIL-ID": data.emailRecordId ?? "",
               "X-CRM-INFLUENCER-ID": data.influencerId ?? "",

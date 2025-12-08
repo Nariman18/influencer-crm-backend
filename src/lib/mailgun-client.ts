@@ -15,7 +15,6 @@ const SMTP_CONFIGURED =
   Boolean(process.env.MAILGUN_SMTP_USER) &&
   Boolean(process.env.MAILGUN_SMTP_PASSWORD);
 
-// Warmup days threshold: prefer explicit env WARMUP_DAYS_THRESHOLD or legacy WarmUpDateTreasure
 const WARMUP_DAYS_THRESHOLD = Number(
   process.env.WARMUP_DAYS_THRESHOLD || process.env.WarmUpDateTreasure || 15
 );
@@ -37,6 +36,7 @@ if (!FROM_EMAIL || !API_KEY || !DOMAIN) {
   });
 }
 
+/** Existing buildFrom (fallback using global env FROM_EMAIL) */
 const buildFrom = (senderName?: string) => {
   const rawName = senderName || FROM_NAME || "";
   const cleaned = String(rawName)
@@ -50,15 +50,42 @@ const buildFrom = (senderName?: string) => {
     .slice(0, 64);
 
   const safeName = cleaned || "Collaboration Team";
-
   const validEmail =
     typeof FROM_EMAIL === "string" &&
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(FROM_EMAIL.trim());
   const fromAddr = validEmail
     ? FROM_EMAIL.trim()
     : "invalid-from@example.invalid";
-
   return `"${safeName}" <${fromAddr}>`;
+};
+
+/**
+ * buildFromFull:
+ * Prefer explicit senderEmail if provided and valid, otherwise fall back to global FROM_EMAIL.
+ */
+const buildFromFull = (senderName?: string, senderEmail?: string) => {
+  const validSenderEmail =
+    typeof senderEmail === "string" &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(senderEmail).trim());
+
+  if (validSenderEmail) {
+    const rawName =
+      senderName || (senderEmail || "").split("@")[0] || FROM_NAME;
+    const cleaned = String(rawName)
+      .replace(/^["']|["']$/g, "")
+      .trim()
+      .replace(/[\r\n\t]/g, " ")
+      .replace(/["<>]/g, "")
+      .replace(/,/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 64);
+    const safeName = cleaned || FROM_NAME;
+    return `"${safeName}" <${String(senderEmail).trim()}>`;
+  }
+
+  // fallback
+  return buildFrom(senderName);
 };
 
 type SendResult = {
@@ -102,26 +129,30 @@ export const sendMailgunEmail = async (opts: {
   html: string;
   replyTo?: string;
   headers?: Record<string, string>;
-  warmupDay?: number; // how many warmup days have passed
-  unsubscribeUrl?: string; // optional https unsubscribe page
+  warmupDay?: number;
+  unsubscribeUrl?: string;
   senderName?: string;
+  senderEmail?: string;
 }): Promise<SendResult> => {
-  // Basic email validation
+  // Basic recipient validation
   if (!isEmailValid(opts.to)) {
     const msg = `Invalid recipient email: "${opts.to}"`;
     console.error("[mailgun-client] " + msg);
     return { success: false, error: msg };
   }
-  if (!isEmailValid(FROM_EMAIL)) {
-    const msg = `Invalid MAILGUN_FROM_EMAIL: "${FROM_EMAIL}"`;
+
+  // Ensure there's at least one valid sending email (env or provided)
+  const validGlobalFrom = isEmailValid(FROM_EMAIL);
+  const validSender =
+    typeof opts.senderEmail === "string" && isEmailValid(opts.senderEmail);
+  if (!validGlobalFrom && !validSender) {
+    const msg = `Invalid MAILGUN_FROM_EMAIL and missing/invalid senderEmail in options.`;
     console.error("[mailgun-client] " + msg);
     return { success: false, error: msg };
   }
 
-  // Extract recipient domain for diagnostics and provider detection
   const recipientDomain = opts.to.split("@").pop()?.toLowerCase() || "";
 
-  // Detect strict providers (Russian + Gmail)
   const RUSSIAN_PROVIDERS = ["mail.ru", "yandex.ru", "rambler.ru", "bk.ru"];
   const GMAIL_PROVIDERS = ["gmail.com", "googlemail.com"];
 
@@ -129,40 +160,14 @@ export const sendMailgunEmail = async (opts: {
   const isGmailProvider = GMAIL_PROVIDERS.includes(recipientDomain);
   const isStrictProvider = isRussianProvider || isGmailProvider;
 
-  if (isRussianProvider) {
-    console.log(
-      `[mailgun-client] 🇷🇺 Russian provider detected: ${recipientDomain} - applying strict optimizations`
-    );
-  } else if (isGmailProvider) {
-    console.log(
-      `[mailgun-client] 📧 Gmail detected: ${recipientDomain} - applying warm-up optimizations`
-    );
-  }
-
-  console.log(
-    "[mailgun-client] Preparing to send to domain:",
-    recipientDomain,
-    {
-      to: opts.to,
-      subject: opts.subject.substring(0, 50),
-      isRussianProvider,
-      isGmailProvider,
-      warmUpMode: isStrictProvider,
-      warmupDay: opts.warmupDay,
-    }
-  );
-
-  // Check MX records for domain (best-effort; don't fail on DNS error)
+  // MX check best-effort
   if (recipientDomain) {
     try {
       const hasMX = await domainHasMX(recipientDomain);
       if (!hasMX) {
         const msg = `No MX records found for domain: ${recipientDomain}`;
         console.error(`[mailgun-client] ${msg}`);
-        return {
-          success: false,
-          error: msg,
-        };
+        return { success: false, error: msg };
       }
       console.log(
         `[mailgun-client] ✓ MX records verified for ${recipientDomain}`
@@ -172,13 +177,12 @@ export const sendMailgunEmail = async (opts: {
         `[mailgun-client] MX check failed for ${recipientDomain}:`,
         mxErr
       );
-      // Continue anyway - MX check failure shouldn't block sending
     }
   }
 
-  const fromHeader = buildFrom(opts.senderName);
+  // Build envelope From header preferring opts.senderEmail if valid
+  const fromHeader = buildFromFull(opts.senderName, opts.senderEmail);
 
-  // If Mailgun API not configured, attempt SMTP fallback immediately
   if (!API_KEY || !DOMAIN) {
     const msg = "Mailgun API key or domain missing in environment";
     console.error("[mailgun-client] " + msg);
@@ -226,26 +230,19 @@ export const sendMailgunEmail = async (opts: {
   form.append("subject", opts.subject);
   form.append("html", opts.html);
 
-  // Use sender's (or provided) reply-to
-  const replyToAddress = opts.replyTo || process.env.MAILGUN_FROM_EMAIL!;
+  // Reply-To -> prefer explicit replyTo (usually manager Gmail), otherwise fallback to provided senderEmail or global from
+  const replyToAddress =
+    opts.replyTo || opts.senderEmail || process.env.MAILGUN_FROM_EMAIL!;
   if (replyToAddress) {
     form.append("h:Reply-To", replyToAddress);
     console.log("[mailgun-client] Reply-To set to:", replyToAddress);
   }
 
-  // 🔥 WARM-UP CRITICAL: Disable ALL tracking during warm-up period
-  // This applies to strict providers and during early warmup days
+  // Disable tracking during warm-up / strict providers
   form.append("o:tracking", "no");
   form.append("o:tracking-clicks", "no");
   form.append("o:tracking-opens", "no");
 
-  if (isStrictProvider) {
-    console.log(
-      `[mailgun-client] 🔒 WARM-UP: All tracking disabled for ${recipientDomain}`
-    );
-  }
-
-  // Generate unique Message-ID for better deliverability & correlation
   const messageIdDomain = DOMAIN || "mail.imx.agency";
   const uniqueId = `${Date.now()}-${Math.random()
     .toString(36)
@@ -253,40 +250,28 @@ export const sendMailgunEmail = async (opts: {
   const generatedMessageId = `<${uniqueId}@${messageIdDomain}>`;
   form.append("h:Message-ID", generatedMessageId);
 
-  console.log("[mailgun-client] Generated Message-ID:", generatedMessageId);
-
-  // Required headers for deliverability
+  // Required headers
   form.append("h:Date", new Date().toUTCString());
   form.append("h:MIME-Version", "1.0");
   form.append("h:Content-Type", "text/html; charset=UTF-8");
 
-  // -------- List-Unsubscribe strategy --------
+  // List-Unsubscribe (only after warmup and not for strict providers)
   try {
     const replyToAddr =
       replyToAddress || process.env.MAILGUN_FROM_EMAIL || FROM_EMAIL;
     const unsubscribeParts: string[] = [];
-
     const warmupDays = Number(opts.warmupDay || 0);
     const hasPassedWarmup = warmupDays >= WARMUP_DAYS_THRESHOLD;
 
-    // IMPORTANT: Do NOT add any List-Unsubscribe at all while warming up
-    // or for strict providers (Gmail and Russian providers). Add it only
-    // after the warmup threshold passed and only for non-strict providers.
     if (hasPassedWarmup && !isStrictProvider) {
-      // mailto is safe and useful — include when warmup passed
-      if (replyToAddr) {
+      if (replyToAddr)
         unsubscribeParts.push(`<mailto:${replyToAddr}?subject=Unsubscribe>`);
-      }
-
-      // add HTTPS unsubscribe page only when provided and warmup passed
       const candidateHttps =
         (opts.unsubscribeUrl && String(opts.unsubscribeUrl).trim()) ||
         (process.env.MAILGUN_UNSUBSCRIBE_URL &&
           String(process.env.MAILGUN_UNSUBSCRIBE_URL).trim());
-
-      if (candidateHttps && String(candidateHttps).startsWith("http")) {
+      if (candidateHttps && String(candidateHttps).startsWith("http"))
         unsubscribeParts.push(`<${String(candidateHttps).trim()}>`);
-      }
     }
 
     if (unsubscribeParts.length > 0) {
@@ -297,30 +282,30 @@ export const sendMailgunEmail = async (opts: {
       );
     } else {
       console.log(
-        "[mailgun-client] Skipped List-Unsubscribe header (still warming up or strict provider)"
+        "[mailgun-client] Skipped List-Unsubscribe header (warmup or strict provider)"
       );
     }
   } catch (luErr) {
     console.warn("[mailgun-client] List-Unsubscribe generation error:", luErr);
   }
 
-  // Custom headers for better deliverability
   form.append("h:X-Mailer", "Collaboration Platform 1.0");
 
-  // Skip "Precedence: bulk" for strict providers during warmup
-  const SKIP_BULK_HEADER_PROVIDERS = [...RUSSIAN_PROVIDERS, ...GMAIL_PROVIDERS];
+  const SKIP_BULK_HEADER_PROVIDERS = [
+    "mail.ru",
+    "yandex.ru",
+    "rambler.ru",
+    "bk.ru",
+    "gmail.com",
+    "googlemail.com",
+  ];
   const skipBulkHeader = SKIP_BULK_HEADER_PROVIDERS.includes(
     recipientDomain || ""
   );
   if (!skipBulkHeader) {
     form.append("h:Precedence", "bulk");
-  } else {
-    console.log(
-      `[mailgun-client] 🔒 WARM-UP: Skipped 'Precedence: bulk' for ${recipientDomain}`
-    );
   }
 
-  // Add user-provided extra headers
   if (opts.headers) {
     for (const [k, v] of Object.entries(opts.headers)) {
       form.append(`h:${k}`, v);
@@ -332,15 +317,13 @@ export const sendMailgunEmail = async (opts: {
     from: fromHeader,
     to: opts.to,
     domain: recipientDomain,
-    subject: opts.subject.substring(0, 50),
+    subject: opts.subject?.substring(0, 50),
     replyTo: replyToAddress,
-    isRussianProvider,
     isGmailProvider,
-    warmUpOptimizations: isStrictProvider,
+    isStrictProvider,
     warmupDay: opts.warmupDay,
   });
 
-  // Retry/backoff params (env override)
   const MAX_RETRIES = Math.max(1, Number(process.env.MAILGUN_MAX_RETRIES || 5));
   const BASE_DELAY_MS = Math.max(
     100,
@@ -366,7 +349,6 @@ export const sendMailgunEmail = async (opts: {
         const status = err?.response?.status;
         const respData = err?.response?.data;
         let recommendedDelaySec: number | null = null;
-
         try {
           if (respData && typeof respData === "object") {
             if (
@@ -389,15 +371,10 @@ export const sendMailgunEmail = async (opts: {
           status === 421 ||
           status === 429 ||
           (status >= 500 && status < 600);
-
         if (!isTransient) {
           console.error(
             `[mailgun-client] Permanent error for ${recipientDomain}:`,
-            {
-              status,
-              data: respData,
-              to: opts.to,
-            }
+            { status, data: respData, to: opts.to }
           );
           throw err;
         }
@@ -426,7 +403,6 @@ export const sendMailgunEmail = async (opts: {
         delayMs += Math.floor(Math.random() * 500);
 
         if (attempt >= MAX_RETRIES) break;
-
         await new Promise((r) => setTimeout(r, delayMs));
       }
     }
@@ -435,7 +411,6 @@ export const sendMailgunEmail = async (opts: {
 
   try {
     const res = await postWithRetries();
-
     const rawId = res.data?.id || res.data?.messageId || undefined;
     const normalizedId =
       typeof rawId === "string" ? rawId.replace(/[<>]/g, "").trim() : undefined;
@@ -446,9 +421,6 @@ export const sendMailgunEmail = async (opts: {
         to: opts.to,
         mailgunId: rawId,
         messageIdNormalized: normalizedId,
-        isRussianProvider,
-        isGmailProvider,
-        warmUpMode: isStrictProvider,
       }
     );
 
@@ -477,12 +449,9 @@ export const sendMailgunEmail = async (opts: {
         to: opts.to,
         error: responseData || err?.message || err,
         domain: recipientDomain,
-        isRussianProvider,
-        isGmailProvider,
       }
     );
 
-    // Try SMTP fallback if configured
     if (SMTP_CONFIGURED) {
       console.warn(
         `[mailgun-client] Attempting SMTP fallback for ${recipientDomain}`,
@@ -508,10 +477,7 @@ export const sendMailgunEmail = async (opts: {
             : undefined;
         console.log(
           `[mailgun-client] ✓ SMTP fallback succeeded for ${recipientDomain}:`,
-          {
-            to: opts.to,
-            smtpMessageId,
-          }
+          { to: opts.to, smtpMessageId }
         );
 
         return {

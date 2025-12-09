@@ -141,9 +141,12 @@ export const sendMailgunEmail = async (opts: {
     return { success: false, error: msg };
   }
 
-  // Enforce a valid global MAILGUN_FROM_EMAIL (this is the visible/from address)
-  if (!isEmailValid(FROM_EMAIL)) {
-    const msg = `Invalid MAILGUN_FROM_EMAIL in environment: "${FROM_EMAIL}"`;
+  // Require at least one valid from address: either global FROM_EMAIL or provided opts.senderEmail
+  const hasValidGlobalFrom = isEmailValid(FROM_EMAIL);
+  const hasValidSenderEmail =
+    !!opts.senderEmail && isEmailValid(opts.senderEmail);
+  if (!hasValidGlobalFrom && !hasValidSenderEmail) {
+    const msg = `Invalid MAILGUN_FROM_EMAIL in environment and no valid senderEmail provided: "${FROM_EMAIL}"`;
     console.error("[mailgun-client] " + msg);
     return { success: false, error: msg };
   }
@@ -177,20 +180,28 @@ export const sendMailgunEmail = async (opts: {
     }
   }
 
-  // Build stable visible From header using global MAILGUN_FROM_EMAIL
-  const rawFromName = (opts.senderName || FROM_NAME || "Collaboration Team")
-    .replace(/^["']|["']$/g, "")
-    .replace(/["<>]/g, "")
-    .replace(/[\r\n\t]/g, " ")
-    .replace(/,/g, "")
-    .trim()
-    .slice(0, 64);
-  const safeFromName = rawFromName || FROM_NAME || "Collaboration Team";
-  const fromHeader = `"${safeFromName}" <${FROM_EMAIL.trim()}>`;
+  // Build From header: prefer explicit senderEmail (envelope) then fall back to global FROM_EMAIL
+  const fromHeader = buildFromFull(opts.senderName, opts.senderEmail);
 
-  // Reply-To: prefer explicit opts.replyTo (manager Gmail) otherwise fallback to MAILGUN_FROM_EMAIL
+  if (opts.senderEmail && hasValidSenderEmail) {
+    console.log(
+      "[mailgun-client] Using explicit envelope senderEmail for From:",
+      opts.senderEmail
+    );
+  } else {
+    console.log(
+      "[mailgun-client] Using global MAILGUN_FROM_EMAIL for From:",
+      FROM_EMAIL
+    );
+  }
+
+  // Reply-To: prefer explicit opts.replyTo (manager Gmail) otherwise fallback to senderEmail or MAILGUN_FROM_EMAIL
   const replyToAddress =
-    opts.replyTo && isEmailValid(opts.replyTo) ? opts.replyTo : FROM_EMAIL;
+    opts.replyTo && isEmailValid(opts.replyTo)
+      ? opts.replyTo
+      : hasValidSenderEmail
+      ? opts.senderEmail!
+      : FROM_EMAIL;
 
   // If Mailgun API not configured, attempt SMTP fallback (unchanged behavior)
   if (!API_KEY || !DOMAIN) {
@@ -316,7 +327,14 @@ export const sendMailgunEmail = async (opts: {
   }
 
   // Skip Precedence: bulk for known strict providers (helps deliverability)
-  const SKIP_BULK_HEADER_PROVIDERS = [...RUSSIAN_PROVIDERS, ...GMAIL_PROVIDERS];
+  const SKIP_BULK_HEADER_PROVIDERS = [
+    "mail.ru",
+    "yandex.ru",
+    "rambler.ru",
+    "bk.ru",
+    "gmail.com",
+    "googlemail.com",
+  ];
   if (!SKIP_BULK_HEADER_PROVIDERS.includes(recipientDomain || "")) {
     form.append("h:Precedence", "bulk");
   } else {
@@ -342,6 +360,7 @@ export const sendMailgunEmail = async (opts: {
     isGmailProvider,
     isStrictProvider,
     warmupDay: opts.warmupDay,
+    explicitSenderEmail: opts.senderEmail,
   });
 
   // Retry/backoff parameters (respect env overrides)

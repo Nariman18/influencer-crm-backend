@@ -398,7 +398,7 @@ export const sendEmail = async (
       select: { email: true, googleEmail: true, name: true },
     });
 
-    // -------- NEW: Visible From (stable) & Reply-To (manager Gmail) --------
+    // -------- Visible From (stable) & Reply-To (manager Gmail) --------
     const visibleFromEmail =
       process.env.MAILGUN_FROM_EMAIL || "team@mail.imx.agency"; // authoritative From
     const replyToAddress =

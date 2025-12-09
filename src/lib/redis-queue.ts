@@ -437,7 +437,7 @@ const startWorkers = async () => {
             html: data.body,
             replyTo: data.replyTo || process.env.MAILGUN_FROM_EMAIL!,
             senderName: data.senderName,
-            // Make the envelope/from the stable MAILGUN_FROM_EMAIL for deliverability
+            // IMPORTANT: make the envelope/from the stable MAILGUN_FROM_EMAIL for deliverability
             senderEmail: process.env.MAILGUN_FROM_EMAIL || undefined,
             headers: {
               ...(data.emailRecordId

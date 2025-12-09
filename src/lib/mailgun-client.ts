@@ -192,7 +192,7 @@ export const sendMailgunEmail = async (opts: {
   const replyToAddress =
     opts.replyTo && isEmailValid(opts.replyTo) ? opts.replyTo : FROM_EMAIL;
 
-  // If Mailgun API not configured, attempt SMTP fallback
+  // If Mailgun API not configured, attempt SMTP fallback (unchanged behavior)
   if (!API_KEY || !DOMAIN) {
     const msg = "Mailgun API key or domain missing in environment";
     console.error("[mailgun-client] " + msg);

@@ -399,18 +399,16 @@ export const sendEmail = async (
     });
 
     // -------- NEW: Visible From (stable) & Reply-To (manager Gmail) --------
-    const visibleSenderName =
-      senderUser?.name && String(senderUser.name).trim().length > 0
-        ? `${senderUser.name}`
-        : process.env.MAILGUN_FROM_NAME || "IMX Agency";
+    const visibleFromEmail =
+      process.env.MAILGUN_FROM_EMAIL || "team@mail.imx.agency"; // authoritative From
     const replyToAddress =
-      senderUser?.googleEmail || senderUser?.email || visibleSenderName; // where replies should go
+      senderUser?.googleEmail || senderUser?.email || visibleFromEmail; // where replies should go
 
     // Build wrapped HTML: signature shows manager name/email but underlying From for deliverability is stable
     const wrappedBody = buildEmailHtml(
       body,
       influencer.name || "",
-      replyToAddress,
+      replyToAddress, // used in signature/visible contact
       senderUser?.name || undefined,
       influencer.email || undefined
     );
@@ -434,7 +432,7 @@ export const sendEmail = async (
       body: wrappedBody,
       influencerName: influencer.name,
       senderName: senderUser?.name || undefined,
-      senderEmail: visibleSenderName, // <<< authoritative FROM that Mailgun will use
+      senderEmail: visibleFromEmail, // <<< authoritative FROM that Mailgun will use
       emailRecordId: email.id,
       influencerId: influencer.id,
       replyTo: replyToAddress, // manager Gmail
@@ -507,12 +505,10 @@ export const bulkSendEmails = async (
     });
 
     // Stable visible from and manager reply-to
-    const visibleSenderName =
-      senderUser?.name && String(senderUser.name).trim().length > 0
-        ? `${senderUser.name}`
-        : process.env.MAILGUN_FROM_NAME || "IMX Agency";
+    const visibleFromEmail =
+      process.env.MAILGUN_FROM_EMAIL || "team@mail.imx.agency";
     const replyToAddress =
-      senderUser?.googleEmail || senderUser?.email || visibleSenderName;
+      senderUser?.googleEmail || senderUser?.email || visibleFromEmail;
 
     for (const influencerId of influencerIds) {
       try {
@@ -642,7 +638,7 @@ export const bulkSendEmails = async (
           body: wrappedBody,
           influencerName: influencer.name,
           senderName: senderUser?.name || undefined,
-          senderEmail: visibleSenderName, // stable envelope From for mailgun
+          senderEmail: visibleFromEmail, // stable envelope From for mailgun
           emailRecordId: email.id,
           influencerId: influencer.id,
           replyTo: replyToAddress, // manager gmail

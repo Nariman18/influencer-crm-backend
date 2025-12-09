@@ -393,25 +393,22 @@ export const sendEmail = async (
       body = customBody;
     }
 
-    // Get sender info including name
     const senderUser = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true, googleEmail: true, name: true },
     });
-    const senderAddress =
-      senderUser?.googleEmail ||
-      senderUser?.email ||
-      process.env.MAILGUN_FROM_EMAIL ||
-      "";
 
-    // Build a per-manager senderEmail (plus-addressing) for the envelope
-    const senderEmail = makeSenderEmailForManager(req.user.id, senderAddress);
+    // -------- NEW: Visible From (stable) & Reply-To (manager Gmail) --------
+    const visibleFromEmail =
+      process.env.MAILGUN_FROM_EMAIL || "no-reply@mail.imx.agency"; // authoritative From
+    const replyToAddress =
+      senderUser?.googleEmail || senderUser?.email || visibleFromEmail; // where replies should go
 
-    // Build wrapped body using the envelope senderEmail as visible from (keeps HTML consistent)
+    // Build wrapped HTML: signature shows manager name/email but underlying From for deliverability is stable
     const wrappedBody = buildEmailHtml(
       body,
       influencer.name || "",
-      senderEmail, // <-- visible From for HTML
+      replyToAddress, // used in signature/visible contact
       senderUser?.name || undefined,
       influencer.email || undefined
     );
@@ -427,6 +424,7 @@ export const sendEmail = async (
       },
     });
 
+    // Pass stable sender (visibleFromEmail) as senderEmail to mailgun; pass replyTo=manager Gmail
     await redisQueue.addEmailJob({
       userId: req.user.id,
       to: influencer.email!,
@@ -434,10 +432,10 @@ export const sendEmail = async (
       body: wrappedBody,
       influencerName: influencer.name,
       senderName: senderUser?.name || undefined,
-      senderEmail,
+      senderEmail: visibleFromEmail, // <<< authoritative FROM that Mailgun will use
       emailRecordId: email.id,
       influencerId: influencer.id,
-      replyTo: senderAddress, // Gmail address where replies should go
+      replyTo: replyToAddress, // manager Gmail
     });
 
     const queuedEmail = await prisma.email.findUnique({
@@ -476,9 +474,8 @@ export const bulkSendEmails = async (
       throw new AppError("Invalid influencer IDs", 400);
     }
 
-    // WARM-UP CHECK (before any other processing)
+    // WARM-UP CHECK
     const volumeCheck = await canSendMore(influencerIds.length);
-
     if (!volumeCheck.allowed) {
       throw new AppError(volumeCheck.message || "Daily limit reached", 429);
     }
@@ -489,7 +486,6 @@ export const bulkSendEmails = async (
     const template = await prisma.emailTemplate.findUnique({
       where: { id: templateId },
     });
-
     if (!template) throw new AppError("Email template not found", 404);
 
     const jobsData: EmailJobData[] = [];
@@ -503,33 +499,25 @@ export const bulkSendEmails = async (
           })
         : null;
 
-    // Get sender info including name
     const senderUser = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true, googleEmail: true, name: true },
     });
-    const senderAddress =
-      senderUser?.googleEmail ||
-      senderUser?.email ||
-      process.env.MAILGUN_FROM_EMAIL ||
-      "";
 
-    // Build per-manager envelope senderEmail
-    const senderEmail = makeSenderEmailForManager(req.user.id, senderAddress);
+    // Stable visible from and manager reply-to
+    const visibleFromEmail =
+      process.env.MAILGUN_FROM_EMAIL || "no-reply@mail.imx.agency";
+    const replyToAddress =
+      senderUser?.googleEmail || senderUser?.email || visibleFromEmail;
 
     for (const influencerId of influencerIds) {
       try {
         const influencer = await prisma.influencer.findUnique({
           where: { id: influencerId },
         });
-
-        if (!influencer || !influencer.email) {
-          continue;
-        }
+        if (!influencer || !influencer.email) continue;
 
         const to = influencer.email.trim();
-
-        // Basic syntactic validation
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
           const failed = await prisma.email.create({
             data: {
@@ -563,7 +551,7 @@ export const bulkSendEmails = async (
                   email: influencer.email,
                 }),
                 influencer.name || "",
-                senderEmail,
+                replyToAddress,
                 senderUser?.name || undefined,
                 influencer.email || undefined
               ),
@@ -596,7 +584,7 @@ export const bulkSendEmails = async (
                   email: influencer.email,
                 }),
                 influencer.name || "",
-                senderEmail,
+                replyToAddress,
                 senderUser?.name || undefined,
                 influencer.email || undefined
               ),
@@ -609,7 +597,7 @@ export const bulkSendEmails = async (
           continue;
         }
 
-        // Build personalized subject/body
+        // Personalized content
         const personalizedVars = {
           ...variables,
           name: influencer.name,
@@ -623,7 +611,7 @@ export const bulkSendEmails = async (
         const wrappedBody = buildEmailHtml(
           body,
           influencer.name || "",
-          senderEmail, // envelope visible From
+          replyToAddress, // signature shows manager reply email
           senderUser?.name || undefined,
           influencer.email || undefined
         );
@@ -650,10 +638,10 @@ export const bulkSendEmails = async (
           body: wrappedBody,
           influencerName: influencer.name,
           senderName: senderUser?.name || undefined,
-          senderEmail, // <-- pass sender envelope email
+          senderEmail: visibleFromEmail, // stable envelope From for mailgun
           emailRecordId: email.id,
           influencerId: influencer.id,
-          replyTo: senderAddress, // Gmail - where replies should go
+          replyTo: replyToAddress, // manager gmail
         };
 
         if (startAutomation) {
@@ -675,13 +663,12 @@ export const bulkSendEmails = async (
       }
     }
 
-    // Queue the jobs
     const jobIds = await redisQueue.addBulkEmailJobs(jobsData, {
       intervalSec: Number(process.env.BULK_SEND_INTERVAL_SEC) || undefined,
       jitterMs: Number(process.env.BULK_SEND_JITTER_MS) || undefined,
     });
 
-    // Update influencers when automation starts
+    // Update influencer statuses (unchanged)
     if (startAutomation) {
       try {
         const queuedInfluencerIds = jobsData

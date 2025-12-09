@@ -437,10 +437,19 @@ const startWorkers = async () => {
             html: data.body,
             replyTo: data.replyTo || process.env.MAILGUN_FROM_EMAIL!,
             senderName: data.senderName,
-            senderEmail: data.senderEmail,
+            // Make the envelope/from the stable MAILGUN_FROM_EMAIL for deliverability
+            senderEmail: process.env.MAILGUN_FROM_EMAIL || undefined,
             headers: {
-              "X-CRM-EMAIL-ID": data.emailRecordId ?? "",
-              "X-CRM-INFLUENCER-ID": data.influencerId ?? "",
+              ...(data.emailRecordId
+                ? { "X-CRM-EMAIL-ID": String(data.emailRecordId) }
+                : {}),
+              ...(data.influencerId
+                ? { "X-CRM-INFLUENCER-ID": String(data.influencerId) }
+                : {}),
+              ...(data.userId ? { "X-CRM-USER-ID": String(data.userId) } : {}),
+              ...(data.senderEmail
+                ? { "X-CRM-SENDER": String(data.senderEmail) }
+                : {}),
             },
           });
 

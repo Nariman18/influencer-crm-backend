@@ -442,7 +442,7 @@ export const sendEmail = async (
     // Visible display name (friendly)
     const visibleSenderName =
       senderUser?.name && String(senderUser.name).trim().length > 0
-        ? `${senderUser.name} via IMX Agency`
+        ? `${senderUser.name}`
         : process.env.MAILGUN_FROM_NAME || "IMX Agency";
 
     // Reply-To should be manager's Gmail when available
@@ -564,7 +564,7 @@ export const bulkSendEmails = async (
     // Visible from (friendly) and reply-to (manager Gmail)
     const visibleSenderName =
       senderUser?.name && String(senderUser.name).trim().length > 0
-        ? `${senderUser.name} via IMX Agency`
+        ? `${senderUser.name}`
         : process.env.MAILGUN_FROM_NAME || "IMX Agency";
     const replyToAddress =
       senderUser?.googleEmail ||

@@ -431,16 +431,14 @@ const startWorkers = async () => {
         const hasEmailId = !!data.emailRecordId;
 
         try {
-          // Use envelope senderEmail from job if present, otherwise fallback to env MAILGUN_FROM_EMAIL
-          const envelopeSender =
-            data.senderEmail || process.env.MAILGUN_FROM_EMAIL || undefined;
           const result = await sendMailgunEmail({
             to: data.to,
             subject: data.subject,
             html: data.body,
             replyTo: data.replyTo || process.env.MAILGUN_FROM_EMAIL!,
             senderName: data.senderName,
-            senderEmail: envelopeSender,
+            // Make the envelope/from the stable MAILGUN_FROM_EMAIL for deliverability
+            senderEmail: process.env.MAILGUN_FROM_EMAIL || undefined,
             headers: {
               ...(data.emailRecordId
                 ? { "X-CRM-EMAIL-ID": String(data.emailRecordId) }

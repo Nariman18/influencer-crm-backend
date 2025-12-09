@@ -26,48 +26,20 @@ function sanitizeLocal(s: string) {
     .slice(0, 64);
 }
 
-/**
- * Build envelope sender email for manager.
- *
- * Default behaviour: return the stable team address (MAILGUN_FROM_EMAIL).
- * Optional: enable plus-addressing per-manager by setting USE_PLUS_ADDRESSING=true
- * (useful if you want per-user envelope addresses for tracking).
- */
-function makeSenderEmailForManager(userId: string, fallbackEmail?: string) {
-  const envFrom = process.env.MAILGUN_FROM_EMAIL || "";
-  const domainFromEnv =
-    process.env.MAILGUN_DOMAIN || envFrom.split("@").pop() || null;
-
-  // If env toggle is set, create plus-addressed sender (e.g. nariman+<id>@domain)
-  const usePlus =
-    String(process.env.USE_PLUS_ADDRESSING || "").toLowerCase() === "true";
-
-  if (usePlus && domainFromEnv) {
-    const localSource = fallbackEmail
-      ? String(fallbackEmail.split("@")[0] || `user-${userId}`)
-      : `user-${userId}`;
-    const local = sanitizeLocal(localSource || `user-${userId}`);
-    return `${local}+${userId}@${domainFromEnv}`;
-  }
-
-  // Default: return the stable from email (team@mail.imx.agency) if valid,
-  // otherwise try to fall back to a sensible plus-address as a last resort.
-  if (envFrom && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(envFrom)) {
-    return envFrom;
-  }
-
-  // Fallback: attempt plus-addressing if domain known
-  if (domainFromEnv) {
-    return `team+${userId}@${domainFromEnv}`;
-  }
-
-  return `team+${userId}@example.invalid`;
-}
+// function makeSenderEmailForManager(userId: string, fallbackEmail?: string) {
+//   const domain =
+//     process.env.MAILGUN_DOMAIN ||
+//     process.env.MAILGUN_FROM_EMAIL?.split("@").pop() ||
+//     null;
+//   const localSource = fallbackEmail
+//     ? String(fallbackEmail.split("@")[0] || "no-reply")
+//     : "no-reply";
+//   const local = sanitizeLocal(localSource);
+//   if (!domain) return `${local}+${userId}@example.invalid`;
+//   return `${local}+${userId}@${domain}`;
+// }
 
 export class EmailService {
-  /**
-   * Validate Gmail access tokens for the user.
-   */
   public static async validateGmailAccess(userId: string): Promise<boolean> {
     try {
       const user = await prisma.user.findUnique({
@@ -137,11 +109,7 @@ export class EmailService {
     }
   }
 
-  /**
-   * Explicit Gmail API send helper (renamed to avoid collision with the controller function).
-   * Returns messageId + sentAt if successful.
-   */
-  static async sendViaGmail(
+  static async sendEmail(
     userId: string,
     to: string,
     subject: string,
@@ -214,7 +182,7 @@ export class EmailService {
           process.env.MAILGUN_FROM_EMAIL ||
           "team@mail.imx.agency";
 
-        // Build wrapped HTML using senderAddress as the visible reply/sender
+        // For Gmail API sends we continue to send from the user's Gmail address (Gmail enforces this)
         const wrappedHtml = buildEmailHtml(
           body,
           influencerName,
@@ -280,9 +248,6 @@ export class EmailService {
   }
 }
 
-/* -------------------------
-   Controller: validateEmailConfig
-   ------------------------- */
 export const validateEmailConfig = async (
   req: AuthRequest,
   res: Response
@@ -344,9 +309,6 @@ export const validateEmailConfig = async (
   }
 };
 
-/* -------------------------
-   Helpers
-   ------------------------- */
 const replaceVariables = (
   text: string,
   variables: Record<string, string>
@@ -359,9 +321,6 @@ const replaceVariables = (
   return result;
 };
 
-/* -------------------------
-   Controller: sendEmail (queueing single email)
-   ------------------------- */
 export const sendEmail = async (
   req: AuthRequest,
   res: Response
@@ -439,18 +398,13 @@ export const sendEmail = async (
       select: { email: true, googleEmail: true, name: true },
     });
 
-    // Visible display name (friendly)
+    // -------- NEW: Visible From (stable) & Reply-To (manager Gmail) --------
     const visibleSenderName =
       senderUser?.name && String(senderUser.name).trim().length > 0
         ? `${senderUser.name}`
         : process.env.MAILGUN_FROM_NAME || "IMX Agency";
-
-    // Reply-To should be manager's Gmail when available
     const replyToAddress =
-      senderUser?.googleEmail ||
-      senderUser?.email ||
-      process.env.MAILGUN_FROM_EMAIL ||
-      "";
+      senderUser?.googleEmail || senderUser?.email || visibleSenderName; // where replies should go
 
     // Build wrapped HTML: signature shows manager name/email but underlying From for deliverability is stable
     const wrappedBody = buildEmailHtml(
@@ -472,21 +426,15 @@ export const sendEmail = async (
       },
     });
 
-    // Build envelope sender (per-manager plus-addressing) for deliverability
-    const envelopeSenderEmail = makeSenderEmailForManager(
-      req.user.id,
-      senderUser?.email || undefined
-    );
-
-    // Queue job: pass visible name + envelope email + replyTo
+    // Pass stable sender (visibleFromEmail) as senderEmail to mailgun; pass replyTo=manager Gmail
     await redisQueue.addEmailJob({
       userId: req.user.id,
       to: influencer.email!,
       subject,
       body: wrappedBody,
       influencerName: influencer.name,
-      senderName: visibleSenderName, // readable display name
-      senderEmail: envelopeSenderEmail, // valid envelope From address
+      senderName: senderUser?.name || undefined,
+      senderEmail: visibleSenderName, // <<< authoritative FROM that Mailgun will use
       emailRecordId: email.id,
       influencerId: influencer.id,
       replyTo: replyToAddress, // manager Gmail
@@ -509,9 +457,6 @@ export const sendEmail = async (
   }
 };
 
-/* -------------------------
-   Controller: bulkSendEmails
-   ------------------------- */
 export const bulkSendEmails = async (
   req: AuthRequest,
   res: Response
@@ -561,16 +506,13 @@ export const bulkSendEmails = async (
       select: { email: true, googleEmail: true, name: true },
     });
 
-    // Visible from (friendly) and reply-to (manager Gmail)
+    // Stable visible from and manager reply-to
     const visibleSenderName =
       senderUser?.name && String(senderUser.name).trim().length > 0
         ? `${senderUser.name}`
         : process.env.MAILGUN_FROM_NAME || "IMX Agency";
     const replyToAddress =
-      senderUser?.googleEmail ||
-      senderUser?.email ||
-      process.env.MAILGUN_FROM_EMAIL ||
-      "";
+      senderUser?.googleEmail || senderUser?.email || visibleSenderName;
 
     for (const influencerId of influencerIds) {
       try {
@@ -693,20 +635,14 @@ export const bulkSendEmails = async (
           },
         });
 
-        // Build envelope sender (per-manager plus-addressing)
-        const envelopeSenderEmail = makeSenderEmailForManager(
-          req.user.id,
-          senderUser?.email || undefined
-        );
-
         const jobPayload: EmailJobData = {
           userId: req.user.id,
           to,
           subject,
           body: wrappedBody,
           influencerName: influencer.name,
-          senderName: visibleSenderName, // human-friendly display name
-          senderEmail: envelopeSenderEmail, // valid email: nariman+id@mail.imx.agency
+          senderName: senderUser?.name || undefined,
+          senderEmail: visibleSenderName, // stable envelope From for mailgun
           emailRecordId: email.id,
           influencerId: influencer.id,
           replyTo: replyToAddress, // manager gmail
@@ -773,9 +709,6 @@ export const bulkSendEmails = async (
   }
 };
 
-/* -------------------------
-   Remaining endpoints (unchanged)
-   ------------------------- */
 export const getEmails = async (
   req: AuthRequest,
   res: Response

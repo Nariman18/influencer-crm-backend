@@ -247,9 +247,6 @@ export const connectGoogleAccount = async (
         googleAccessToken: accessToken,
         googleRefreshToken: refreshToken,
         googleEmail: email,
-        // optional audit fields: add to schema if desired
-        ...(prisma.user ? { googleConnectedAt: new Date() } : {}),
-        ...(prisma.user ? { googleConnectedIp: req.ip || null } : {}),
       },
       select: {
         id: true,

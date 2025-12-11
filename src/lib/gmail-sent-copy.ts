@@ -1,9 +1,4 @@
-// src/lib/gmail-sent-copy.ts
-/**
- * Helper to copy sent emails to Gmail's Sent folder after sending via Mailgun.
- * This ensures emails appear in the user's Gmail "Sent" section.
- */
-
+// src/lib/gmail-sent-copy.ts (updated)
 import { google } from "googleapis";
 import { getPrisma } from "../config/prisma";
 
@@ -18,14 +13,18 @@ export interface GmailCopyOptions {
   replyTo?: string;
 }
 
-/**
- * Copies a sent email to the user's Gmail Sent folder.
- * This should be called after successfully sending via Mailgun.
- */
 export const copyToGmailSent = async (
   opts: GmailCopyOptions
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
   try {
+    // Quick guard: disable sending to Gmail while auditing if env var set
+    if (process.env.DISABLE_GMAIL_SENT_COPY === "true") {
+      console.log(
+        "[gmail-sent-copy] Disabled via DISABLE_GMAIL_SENT_COPY=true"
+      );
+      return { success: false, error: "gmail-sent-copy disabled for audit" };
+    }
+
     // Get user's Google tokens
     const user = await prisma.user.findUnique({
       where: { id: opts.userId },
@@ -38,12 +37,23 @@ export const copyToGmailSent = async (
       },
     });
 
-    if (!user?.googleAccessToken || !user?.googleRefreshToken || !user?.googleEmail) {
+    if (
+      !user?.googleAccessToken ||
+      !user?.googleRefreshToken ||
+      !user?.googleEmail
+    ) {
       return {
         success: false,
         error: "No Gmail account connected for user",
       };
     }
+
+    // Logging to help audit which user/email/ip used at runtime (do NOT log tokens)
+    console.log("[gmail-sent-copy] copying sent email for user:", {
+      userId: opts.userId,
+      googleEmail: user.googleEmail,
+      appEmail: user.email,
+    });
 
     const oauth2Client = new OAuth2(
       process.env.GOOGLE_CLIENT_ID!,
@@ -121,7 +131,10 @@ export const copyToGmailSent = async (
       messageId: response.data.id || undefined,
     };
   } catch (error: any) {
-    console.error("[gmail-sent-copy] Failed to copy email to Sent folder:", error?.message || error);
+    console.error(
+      "[gmail-sent-copy] Failed to copy email to Sent folder:",
+      error?.message || error
+    );
     return {
       success: false,
       error: error?.message || "Unknown error",

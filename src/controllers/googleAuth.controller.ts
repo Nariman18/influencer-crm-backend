@@ -1,3 +1,4 @@
+// backend/googleAuth.controller.ts (updated)
 import { Request, Response } from "express";
 import { google } from "googleapis";
 import { getPrisma } from "../config/prisma";
@@ -5,11 +6,10 @@ import { AppError } from "../middleware/errorHandler";
 import { AuthRequest } from "../types";
 
 const OAuth2 = google.auth.OAuth2;
-
 const prisma = getPrisma();
 
 /**
- * Enhanced token exchange with better error handling
+ * exchangeGoogleToken (unchanged except minor logging)
  */
 export const exchangeGoogleToken = async (
   req: Request,
@@ -34,7 +34,6 @@ export const exchangeGoogleToken = async (
       redirectUri
     );
 
-    // Add better error handling for token exchange**
     let tokens;
     try {
       const tokenResponse = await oauth2Client.getToken(code);
@@ -42,7 +41,7 @@ export const exchangeGoogleToken = async (
       console.log("Tokens received successfully");
     } catch (tokenError: any) {
       console.error("Token exchange failed:", tokenError);
-      if (tokenError.message.includes("invalid_grant")) {
+      if (tokenError.message && tokenError.message.includes("invalid_grant")) {
         throw new AppError(
           "Authorization code is invalid or has expired. Please try connecting again.",
           400
@@ -99,7 +98,7 @@ export const exchangeGoogleToken = async (
 };
 
 /**
- * Enhanced Google account connection with token validation
+ * connectGoogleAccount (updated: requires and validates `state`)
  */
 export const connectGoogleAccount = async (
   req: AuthRequest,
@@ -112,10 +111,33 @@ export const connectGoogleAccount = async (
       throw new AppError("Not authenticated", 401);
     }
 
-    const { accessToken, refreshToken, email } = req.body;
+    const { accessToken, refreshToken, email, state } = req.body;
 
-    if (!accessToken || !refreshToken || !email) {
-      throw new AppError("Google tokens and email are required", 400);
+    if (!accessToken || !refreshToken || !email || !state) {
+      throw new AppError("Google tokens, email and state are required", 400);
+    }
+
+    // Decode state (base64 JSON produced by frontend)
+    let decodedState: any = null;
+    try {
+      const json = Buffer.from(state, "base64").toString("utf8");
+      decodedState = JSON.parse(json);
+    } catch (err) {
+      console.error("Invalid OAuth state format", err);
+      throw new AppError("Invalid OAuth state", 400);
+    }
+
+    if (!decodedState || !decodedState.uid) {
+      throw new AppError("OAuth state missing required data", 400);
+    }
+
+    // Ensure the state UID matches the currently authenticated user
+    if (String(decodedState.uid) !== String(req.user.id)) {
+      console.error("OAuth state user mismatch", {
+        stateUid: decodedState.uid,
+        reqUser: req.user.id,
+      });
+      throw new AppError("OAuth state does not match authenticated user", 403);
     }
 
     console.log("📝 Storing Google tokens for user:", req.user.id);
@@ -124,6 +146,52 @@ export const connectGoogleAccount = async (
       accessTokenLength: accessToken.length,
       refreshTokenLength: refreshToken.length,
     });
+
+    // Defensive DB checks: ensure tokens not already associated with another user
+    try {
+      const existingAccessOwner = await prisma.user.findFirst({
+        where: {
+          googleAccessToken: accessToken,
+          NOT: { id: req.user.id },
+        },
+        select: { id: true, email: true },
+      });
+
+      if (existingAccessOwner) {
+        console.error(
+          "Access token already associated with another user",
+          existingAccessOwner
+        );
+        throw new AppError(
+          "This Google access token is already used by another account",
+          400
+        );
+      }
+
+      const existingRefreshOwner = await prisma.user.findFirst({
+        where: {
+          googleRefreshToken: refreshToken,
+          NOT: { id: req.user.id },
+        },
+        select: { id: true, email: true },
+      });
+
+      if (existingRefreshOwner) {
+        console.error(
+          "Refresh token already associated with another user",
+          existingRefreshOwner
+        );
+        throw new AppError(
+          "This Google refresh token is already used by another account",
+          400
+        );
+      }
+    } catch (dbCheckErr) {
+      // If DB check throws AppError, rethrow; otherwise log and abort
+      if (dbCheckErr instanceof AppError) throw dbCheckErr;
+      console.error("Token ownership check failed:", dbCheckErr);
+      throw new AppError("Failed to validate token ownership", 500);
+    }
 
     // Validate tokens before storing**
     const oauth2Client = new OAuth2(
@@ -138,11 +206,10 @@ export const connectGoogleAccount = async (
     });
 
     try {
-      // Test token validity
       const tokenInfo = await oauth2Client.getTokenInfo(accessToken);
       console.log(
         "Token is valid, expires at:",
-        new Date(tokenInfo.expiry_date!)
+        tokenInfo.expiry_date || "unknown"
       );
       console.log("✅ Google OAuth tokens validated");
     } catch (validationError: any) {
@@ -153,13 +220,16 @@ export const connectGoogleAccount = async (
       );
     }
 
-    // Update user with validated tokens**
+    // Persist tokens + audit info (connectedAt/Ip). If your Prisma schema doesn't have these fields, remove them.
     const updatedUser = await prisma.user.update({
       where: { id: req.user.id },
       data: {
         googleAccessToken: accessToken,
         googleRefreshToken: refreshToken,
         googleEmail: email,
+        // optional audit fields: add to schema if desired
+        ...(prisma.user ? { googleConnectedAt: new Date() } : {}),
+        ...(prisma.user ? { googleConnectedIp: req.ip || null } : {}),
       },
       select: {
         id: true,
@@ -189,7 +259,7 @@ export const connectGoogleAccount = async (
 };
 
 /**
- * Disconnect Google account
+ * Disconnect Google account (unchanged)
  */
 export const disconnectGoogleAccount = async (
   req: AuthRequest,

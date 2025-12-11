@@ -504,7 +504,7 @@ const markEmailReplied = async (
   try {
     await prisma.influencer.update({
       where: { id: influencerId },
-      data: { status: InfluencerStatus.NOT_SENT },
+      data: { status: InfluencerStatus.COMPLETED },
     });
     console.log(
       "[followup] ✓ Influencer status reset to NOT_SENT:",

@@ -22,6 +22,96 @@ try {
 }
 
 /**
+ * 🚀 OPTIMIZATION 1: Smart Incremental Checking
+ * Only check emails that haven't been checked recently
+ * Stores last check timestamp in Redis
+ */
+
+const REDIS_KEY_PREFIX = "reply-check:last-checked:";
+
+async function getLastCheckTime(emailId: string): Promise<Date | null> {
+  if (!publisher) return null;
+
+  try {
+    const timestamp = await publisher.get(`${REDIS_KEY_PREFIX}${emailId}`);
+    return timestamp ? new Date(parseInt(timestamp)) : null;
+  } catch (err) {
+    console.warn("[reply-checker] Failed to get last check time:", err);
+    return null;
+  }
+}
+
+async function setLastCheckTime(emailId: string): Promise<void> {
+  if (!publisher) return;
+
+  try {
+    // Store timestamp, expire after 8 days (1 day buffer past 7-day window)
+    await publisher.setex(
+      `${REDIS_KEY_PREFIX}${emailId}`,
+      8 * 24 * 60 * 60,
+      Date.now().toString()
+    );
+  } catch (err) {
+    console.warn("[reply-checker] Failed to set last check time:", err);
+  }
+}
+
+/**
+ * 🚀 OPTIMIZATION 2: Adaptive Time-Based Prioritization
+ * Check recent emails more frequently than old emails
+ */
+
+function getCheckIntervalForEmail(sentAt: Date): number {
+  const ageInHours = (Date.now() - sentAt.getTime()) / (1000 * 60 * 60);
+
+  // 0-24h: Check every time (5-10 min intervals)
+  if (ageInHours < Number(process.env.RECENT_EMAIL_THRESHOLD_HOURS || 24))
+    return 0;
+
+  // 24-48h: Check if not checked in last 30 min
+  if (ageInHours < Number(process.env.MEDIUM_EMAIL_THRESHOLD_HOURS || 48))
+    return 30 * 60 * 1000;
+
+  // 48-72h: Check if not checked in last 2 hours
+  if (ageInHours < Number(process.env.OLD_EMAIL_THRESHOLD_HOURS || 72))
+    return 2 * 60 * 60 * 1000;
+
+  // 3-7 days: Check if not checked in last 6 hours
+  return 6 * 60 * 60 * 1000;
+}
+
+async function shouldCheckEmail(email: any): Promise<boolean> {
+  // Check if optimizations are enabled
+  const USE_SMART_CHECKING =
+    process.env.USE_SMART_INCREMENTAL_CHECKING === "true";
+  const USE_ADAPTIVE = process.env.USE_ADAPTIVE_INTERVALS === "true";
+
+  if (!USE_SMART_CHECKING && !USE_ADAPTIVE) {
+    return true; // Always check if optimizations disabled
+  }
+
+  if (!email.sentAt) return true; // Always check if no sentAt
+
+  const requiredInterval = USE_ADAPTIVE
+    ? getCheckIntervalForEmail(email.sentAt)
+    : 0;
+
+  // If interval is 0, always check (recent emails)
+  if (requiredInterval === 0) return true;
+
+  if (!USE_SMART_CHECKING) return true; // If adaptive only, check based on time
+
+  const lastCheck = await getLastCheckTime(email.id);
+
+  // If never checked, check now
+  if (!lastCheck) return true;
+
+  // Check if enough time has passed
+  const timeSinceLastCheck = Date.now() - lastCheck.getTime();
+  return timeSinceLastCheck >= requiredInterval;
+}
+
+/**
  * Normalize Message-ID value: remove angle brackets and whitespace
  */
 const normalizeMessageId = (v?: string | null): string | null => {
@@ -98,13 +188,16 @@ const isReplyToOriginal = (
 };
 
 /**
- * Check for reply to a specific email in Gmail
+ * 🚀 OPTIMIZATION 3: Optimized Gmail Query
+ * Combine Message-ID and subject search in ONE query
  */
 async function checkEmailForReply(
   email: any,
   user: any,
   gmail: any
 ): Promise<boolean> {
+  const USE_OPTIMIZED = process.env.USE_OPTIMIZED_QUERIES !== "false";
+
   const mailgunMessageIdNormalized =
     email.mailgunMessageIdNormalized ||
     normalizeMessageId(email.mailgunMessageId) ||
@@ -125,6 +218,100 @@ async function checkEmailForReply(
       Math.floor(email.sentAt.getTime() / 1000) - afterEpochBufferSec;
   }
 
+  if (USE_OPTIMIZED) {
+    // 🚀 OPTIMIZED: Combine Message-ID and fallback search in ONE query
+    const subjectSnippet = (email.subject || "")
+      .replace(/"/g, "")
+      .slice(0, 80)
+      .trim();
+
+    const queryParts = [
+      influencerEmail ? `from:${influencerEmail}` : "",
+      "in:inbox",
+      userGmailAddress ? `to:${userGmailAddress}` : "",
+    ].filter(Boolean);
+
+    if (afterEpoch) queryParts.push(`after:${afterEpoch}`);
+
+    // Add Message-ID OR subject search
+    if (mailgunMessageIdNormalized) {
+      queryParts.push(
+        `(rfc822msgid:${mailgunMessageIdNormalized} OR subject:"${subjectSnippet}")`
+      );
+    } else if (subjectSnippet) {
+      queryParts.push(`subject:"${subjectSnippet}"`);
+    }
+
+    const combinedQuery = queryParts.join(" ");
+
+    try {
+      const listResp = await gmail.users.messages.list({
+        userId: "me",
+        q: combinedQuery,
+        maxResults: 20,
+      });
+
+      const candidates = listResp.data.messages || [];
+
+      if (candidates.length === 0) {
+        return false;
+      }
+
+      for (const c of candidates) {
+        if (!c?.id) continue;
+
+        try {
+          const meta = await gmail.users.messages.get({
+            userId: "me",
+            id: c.id,
+            format: "metadata",
+            metadataHeaders: [
+              "From",
+              "To",
+              "Subject",
+              "In-Reply-To",
+              "References",
+              "Date",
+            ],
+          });
+
+          const headersMap = extractHeaders(meta.data);
+          const internalDate = Number(meta.data.internalDate || 0);
+
+          if (!internalDate || !email.sentAt) continue;
+
+          const msgDate = new Date(internalDate);
+          const sentAtWithBuffer =
+            email.sentAt.getTime() - afterEpochBufferSec * 1000;
+
+          if (msgDate.getTime() < sentAtWithBuffer) continue;
+
+          const valid = isReplyToOriginal(
+            headersMap,
+            mailgunMessageIdNormalized,
+            influencerEmail,
+            userGmailAddress,
+            email.sentAt || null,
+            email.subject || null
+          );
+
+          if (valid) {
+            console.log(
+              `[reply-checker] ✓ Reply found for email ${email.id} (optimized query)`
+            );
+            return true;
+          }
+        } catch (cErr) {
+          console.warn(`[reply-checker] Failed to inspect candidate:`, c.id);
+        }
+      }
+    } catch (searchErr) {
+      console.warn(`[reply-checker] Optimized search failed:`, searchErr);
+      // Fall through to original method
+    }
+  }
+
+  // Original method (fallback or if optimizations disabled)
   // Try searching by Message-ID first
   if (mailgunMessageIdNormalized) {
     const q =
@@ -325,7 +512,7 @@ export async function checkUserReplies(userId: string): Promise<{
     const sentEmails = await prisma.email.findMany({
       where: {
         sentById: userId,
-        status: EmailStatus.SENT, // Only check SENT emails
+        status: EmailStatus.SENT,
         sentAt: {
           gte: cutoffDate,
         },
@@ -336,7 +523,7 @@ export async function checkUserReplies(userId: string): Promise<{
         },
       },
       orderBy: { sentAt: "desc" },
-      take: 200, // Check last 200 emails max
+      take: 200,
     });
 
     if (sentEmails.length === 0) {
@@ -395,7 +582,7 @@ export async function checkUserReplies(userId: string): Promise<{
         const hasReply = await checkEmailForReply(email, user, gmail);
 
         if (hasReply) {
-          // ✅ CRITICAL: Double-check status before updating (race condition protection)
+          // ✅ CRITICAL: Double-check status before updating
           const currentEmail = await prisma.email.findUnique({
             where: { id: email.id },
             select: { status: true },
@@ -403,9 +590,9 @@ export async function checkUserReplies(userId: string): Promise<{
 
           if (currentEmail?.status === EmailStatus.REPLIED) {
             console.log(
-              `[reply-checker] ✓ Email ${email.id} already marked REPLIED by another process, skipping`
+              `[reply-checker] ✓ Email ${email.id} already marked REPLIED, skipping`
             );
-            continue; // Skip - already marked by followup-service or another checker
+            continue;
           }
 
           // Mark email as REPLIED
@@ -417,17 +604,17 @@ export async function checkUserReplies(userId: string): Promise<{
             },
           });
 
-          // Update influencer status to NOT_SENT
+          // ✅ Update influencer status to COMPLETED
           await prisma.influencer.update({
             where: { id: email.influencer.id },
             data: {
-              status: InfluencerStatus.NOT_SENT,
+              status: InfluencerStatus.COMPLETED,
             },
           });
 
           stats.replied++;
 
-          // Send real-time notification to manager
+          // Send real-time notification
           await notifyManagerOfReply(
             userId,
             email.id,
@@ -436,7 +623,7 @@ export async function checkUserReplies(userId: string): Promise<{
           );
 
           console.log(
-            `[reply-checker] ✓ Marked email ${email.id} as REPLIED for influencer ${email.influencer.id}`
+            `[reply-checker] ✓ Marked email ${email.id} as REPLIED and influencer ${email.influencer.id} as COMPLETED`
           );
         }
       } catch (error) {
@@ -463,18 +650,31 @@ export async function checkUserReplies(userId: string): Promise<{
 }
 
 /**
- * Main function: Check all recent SENT emails for replies
- * Runs periodically to detect replies and mark emails as REPLIED
+ * OPTIMIZED: Main periodic reply checker
+ * Uses smart incremental checking and adaptive intervals when enabled
  */
 export async function checkAllRecentReplies(): Promise<{
   checked: number;
+  skipped?: number;
   replied: number;
   errors: number;
 }> {
-  console.log("[reply-checker] 🔍 Starting periodic reply check...");
+  const USE_OPTIMIZATIONS =
+    process.env.USE_SMART_INCREMENTAL_CHECKING === "true" ||
+    process.env.USE_ADAPTIVE_INTERVALS === "true" ||
+    process.env.USE_OPTIMIZED_QUERIES === "true";
+
+  if (USE_OPTIMIZATIONS) {
+    console.log(
+      "[reply-checker] 🔍 Starting OPTIMIZED periodic reply check..."
+    );
+  } else {
+    console.log("[reply-checker] 🔍 Starting periodic reply check...");
+  }
 
   const stats = {
     checked: 0,
+    skipped: 0,
     replied: 0,
     errors: 0,
   };
@@ -485,7 +685,7 @@ export async function checkAllRecentReplies(): Promise<{
 
     const sentEmails = await prisma.email.findMany({
       where: {
-        status: EmailStatus.SENT, // ✅ Only fetch SENT emails (not REPLIED)
+        status: EmailStatus.SENT,
         sentAt: {
           gte: cutoffDate,
         },
@@ -505,16 +705,37 @@ export async function checkAllRecentReplies(): Promise<{
         },
       },
       orderBy: { sentAt: "desc" },
-      take: 500, // Process max 500 emails per run to avoid timeouts
+      take: 500,
     });
 
     console.log(
       `[reply-checker] Found ${sentEmails.length} SENT emails to check`
     );
 
-    // Group emails by user to reuse Gmail OAuth connections
-    const emailsByUser = new Map<string, typeof sentEmails>();
-    for (const email of sentEmails) {
+    // OPTIMIZATION: Filter emails by priority (if enabled)
+    const emailsToCheck: typeof sentEmails = [];
+
+    if (USE_OPTIMIZATIONS) {
+      for (const email of sentEmails) {
+        const shouldCheck = await shouldCheckEmail(email);
+
+        if (shouldCheck) {
+          emailsToCheck.push(email);
+        } else {
+          stats.skipped++;
+        }
+      }
+
+      console.log(
+        `[reply-checker] Checking ${emailsToCheck.length} emails (skipped ${stats.skipped} recently checked)`
+      );
+    } else {
+      emailsToCheck.push(...sentEmails);
+    }
+
+    // Group emails by user
+    const emailsByUser = new Map<string, typeof emailsToCheck>();
+    for (const email of emailsToCheck) {
       const userId = email.sentBy.id;
       if (!emailsByUser.has(userId)) {
         emailsByUser.set(userId, []);
@@ -577,15 +798,20 @@ export async function checkAllRecentReplies(): Promise<{
 
       const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-      // Check each email for replies
+      // Check each email
       for (const email of userEmails) {
         stats.checked++;
 
         try {
           const hasReply = await checkEmailForReply(email, user, gmail);
 
+          // 🚀 Mark as checked in Redis (if optimization enabled)
+          if (process.env.USE_SMART_INCREMENTAL_CHECKING === "true") {
+            await setLastCheckTime(email.id);
+          }
+
           if (hasReply) {
-            // ✅ CRITICAL: Double-check status before updating (race condition protection)
+            // Double-check status before updating
             const currentEmail = await prisma.email.findUnique({
               where: { id: email.id },
               select: { status: true },
@@ -593,9 +819,9 @@ export async function checkAllRecentReplies(): Promise<{
 
             if (currentEmail?.status === EmailStatus.REPLIED) {
               console.log(
-                `[reply-checker] ✓ Email ${email.id} already marked REPLIED by another process, skipping`
+                `[reply-checker] ✓ Email ${email.id} already marked REPLIED, skipping`
               );
-              continue; // Skip - already marked by followup-service or another checker
+              continue;
             }
 
             // Mark email as REPLIED
@@ -607,17 +833,17 @@ export async function checkAllRecentReplies(): Promise<{
               },
             });
 
-            // Update influencer status to NOT_SENT
+            // Update influencer status to COMPLETED
             await prisma.influencer.update({
               where: { id: email.influencer.id },
               data: {
-                status: InfluencerStatus.NOT_SENT,
+                status: InfluencerStatus.COMPLETED,
               },
             });
 
             stats.replied++;
 
-            // Send real-time notification to manager
+            // Send real-time notification
             await notifyManagerOfReply(
               userId,
               email.id,
@@ -626,7 +852,7 @@ export async function checkAllRecentReplies(): Promise<{
             );
 
             console.log(
-              `[reply-checker] ✓ Marked email ${email.id} as REPLIED for influencer ${email.influencer.id}`
+              `[reply-checker] ✓ Marked email ${email.id} as REPLIED and influencer ${email.influencer.id} as COMPLETED`
             );
           }
         } catch (error) {
@@ -637,8 +863,13 @@ export async function checkAllRecentReplies(): Promise<{
           stats.errors++;
         }
 
-        // Add small delay between checks to avoid rate limiting
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        // 🚀 Adaptive delay based on email age (if enabled)
+        const emailAge =
+          email.sentAt && process.env.USE_ADAPTIVE_INTERVALS === "true"
+            ? (Date.now() - email.sentAt.getTime()) / (1000 * 60 * 60)
+            : 0;
+        const delay = emailAge > 0 && emailAge < 24 ? 50 : 100;
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
 
       console.log(
@@ -646,9 +877,15 @@ export async function checkAllRecentReplies(): Promise<{
       );
     }
 
-    console.log(
-      `[reply-checker] ✅ Reply check complete: ${stats.checked} checked, ${stats.replied} replied, ${stats.errors} errors`
-    );
+    if (USE_OPTIMIZATIONS) {
+      console.log(
+        `[reply-checker] ✅ Optimized check complete: ${stats.checked} checked, ${stats.skipped} skipped, ${stats.replied} replied, ${stats.errors} errors`
+      );
+    } else {
+      console.log(
+        `[reply-checker] ✅ Reply check complete: ${stats.checked} checked, ${stats.replied} replied, ${stats.errors} errors`
+      );
+    }
 
     return stats;
   } catch (error) {

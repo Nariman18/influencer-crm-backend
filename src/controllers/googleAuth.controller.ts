@@ -107,6 +107,26 @@ export const connectGoogleAccount = async (
   try {
     console.log("🔗 Google account connection request received");
 
+    console.log("🔗 /google/connect called - req.body:", {
+      keys: Object.keys(req.body || {}),
+      sampleBody: (() => {
+        try {
+          return {
+            ...req.body,
+            accessToken: req.body?.accessToken ? "<accessToken...>" : undefined,
+            refreshToken: req.body?.refreshToken
+              ? "<refreshToken...>"
+              : undefined,
+            state: req.body?.state,
+          };
+        } catch {
+          return "unserializable";
+        }
+      })(),
+      sessionId: req.headers["x-session-id"] || null,
+      ip: req.ip || null,
+    });
+
     if (!req.user) {
       throw new AppError("Not authenticated", 401);
     }

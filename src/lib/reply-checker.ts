@@ -863,7 +863,7 @@ export async function checkAllRecentReplies(): Promise<{
           stats.errors++;
         }
 
-        // 🚀 Adaptive delay based on email age (if enabled)
+        // Adaptive delay based on email age (if enabled)
         const emailAge =
           email.sentAt && process.env.USE_ADAPTIVE_INTERVALS === "true"
             ? (Date.now() - email.sentAt.getTime()) / (1000 * 60 * 60)

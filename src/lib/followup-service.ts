@@ -633,7 +633,6 @@ const handleNoReplyFallback = async (jobData: any) => {
     user?.googleEmail || user?.email || process.env.MAILGUN_FROM_EMAIL || "";
   const wrappedBody = buildEmailHtml(
     personalizedBody,
-    influencer.name || "",
     senderAddress,
     user?.name || undefined
   );

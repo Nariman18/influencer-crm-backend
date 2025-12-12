@@ -17,7 +17,7 @@ const MAILGUN_DOMAIN = process.env.MAILGUN_DOMAIN!;
 const MAILGUN_FROM_FALLBACK =
   process.env.MAILGUN_FROM_EMAIL || `noreply@${MAILGUN_DOMAIN}`;
 
-// Util: simple email validation
+// Simple email validation
 const isValidEmail = (s: any): s is string =>
   !!s && typeof s === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
 

@@ -185,10 +185,8 @@ export class EmailService {
         // For Gmail API sends we continue to send from the user's Gmail address (Gmail enforces this)
         const wrappedHtml = buildEmailHtml(
           body,
-          influencerName,
           senderAddress,
-          user.name || undefined,
-          to // recipientEmail parameter
+          user.name || undefined
         );
 
         const emailLines = [
@@ -407,10 +405,8 @@ export const sendEmail = async (
     // Build wrapped HTML: signature shows manager name/email but underlying From for deliverability is stable
     const wrappedBody = buildEmailHtml(
       body,
-      influencer.name || "",
-      replyToAddress, // used in signature/visible contact
-      senderUser?.name || undefined,
-      influencer.email || undefined
+      replyToAddress,
+      senderUser?.name || undefined
     );
 
     const email = await prisma.email.create({
@@ -550,10 +546,8 @@ export const bulkSendEmails = async (
                   name: influencer.name,
                   email: influencer.email,
                 }),
-                influencer.name || "",
                 replyToAddress,
-                senderUser?.name || undefined,
-                influencer.email || undefined
+                senderUser?.name || undefined
               ),
               status: EmailStatus.FAILED,
               errorMessage: `No MX records for domain: ${domain}`,
@@ -583,10 +577,9 @@ export const bulkSendEmails = async (
                   name: influencer.name,
                   email: influencer.email,
                 }),
-                influencer.name || "",
+
                 replyToAddress,
-                senderUser?.name || undefined,
-                influencer.email || undefined
+                senderUser?.name || undefined
               ),
               status: EmailStatus.FAILED,
               errorMessage:
@@ -610,10 +603,8 @@ export const bulkSendEmails = async (
 
         const wrappedBody = buildEmailHtml(
           body,
-          influencer.name || "",
           replyToAddress, // signature shows manager reply email
-          senderUser?.name || undefined,
-          influencer.email || undefined
+          senderUser?.name || undefined
         );
 
         const email = await prisma.email.create({

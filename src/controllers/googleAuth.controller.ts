@@ -227,6 +227,20 @@ export const connectGoogleAccount = async (
 
     try {
       const tokenInfo = await oauth2Client.getTokenInfo(accessToken);
+
+      console.log("Token scopes:", tokenInfo.scopes || []);
+      if (
+        !tokenInfo.scopes ||
+        !tokenInfo.scopes.includes(
+          "https://www.googleapis.com/auth/gmail.readonly"
+        )
+      ) {
+        console.error("Insufficient token scopes:", tokenInfo.scopes);
+        throw new AppError(
+          "Insufficient Google scopes. Please reconnect and grant Gmail read access.",
+          400
+        );
+      }
       console.log(
         "Token is valid, expires at:",
         tokenInfo.expiry_date || "unknown"
